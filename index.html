@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>中建四局公文格式化工具</title>
+  <style>
+    :root {
+      --red: #c0392b;
+      --red-light: #e74c3c;
+      --red-bg: #fdf3f2;
+      --gray: #f5f5f5;
+      --border: #e0e0e0;
+      --text: #333;
+      --muted: #888;
+      --success: #27ae60;
+      --warning: #e67e22;
+      --info: #2980b9;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+      background: #f0f2f5;
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── 顶部导航 ── */
+    header {
+      background: var(--red);
+      color: #fff;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      height: 56px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    header h1 { font-size: 18px; font-weight: 600; flex: 1; }
+    header .version { font-size: 12px; opacity: .7; }
+
+    /* ── 主体 ── */
+    main { max-width: 860px; margin: 32px auto; padding: 0 16px; }
+
+    /* ── 标签页 ── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      background: #fff;
+      border-radius: 10px 10px 0 0;
+      padding: 8px 8px 0;
+      border: 1px solid var(--border);
+      border-bottom: none;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 10px 0;
+      border: none;
+      background: transparent;
+      border-radius: 6px 6px 0 0;
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+      color: var(--muted);
+      transition: .2s;
+    }
+    .tab-btn.active {
+      background: var(--red);
+      color: #fff;
+      font-weight: 600;
+    }
+    .tab-btn:hover:not(.active) { background: var(--red-bg); color: var(--red); }
+
+    .tab-panel {
+      display: none;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 10px 10px;
+      padding: 28px 28px 32px;
+    }
+    .tab-panel.active { display: block; }
+
+    /* ── 上传区 ── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      background: var(--gray);
+      min-height: 160px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: .2s;
+      padding: 20px;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--red);
+      background: var(--red-bg);
+    }
+    .drop-zone .icon { font-size: 40px; }
+    .drop-zone .hint { font-size: 15px; color: var(--muted); }
+    .drop-zone .fmt  { font-size: 12px; color: #bbb; }
+    #file-input { display: none; }
+
+    /* ── 文件预览 ── */
+    .file-preview {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: #f0f7f0;
+      border: 1px solid #a8d5a2;
+      border-radius: 8px;
+      margin-top: 16px;
+    }
+    .file-preview.show { display: flex; }
+    .file-preview .fname { font-size: 14px; flex: 1; word-break: break-all; }
+    .file-preview .fsize { font-size: 12px; color: var(--muted); }
+    .file-preview .remove-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 18px; color: #999; padding: 2px 6px;
+    }
+    .file-preview .remove-btn:hover { color: var(--red); }
+
+    /* ── 按钮 ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 24px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: .2s;
+      font-weight: 500;
+    }
+    .btn-primary { background: var(--red); color: #fff; }
+    .btn-primary:hover { background: var(--red-light); }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-outline {
+      background: #fff;
+      color: var(--red);
+      border: 1px solid var(--red);
+    }
+    .btn-outline:hover { background: var(--red-bg); }
+
+    /* ── 进度条 ── */
+    .progress-wrap { display: none; margin-top: 16px; }
+    .progress-wrap.show { display: block; }
+    .progress-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--red);
+      width: 0%;
+      border-radius: 3px;
+      transition: width .3s;
+      animation: progress-anim 1.5s infinite;
+    }
+    @keyframes progress-anim {
+      0%   { opacity: 1; }
+      50%  { opacity: .6; }
+      100% { opacity: 1; }
+    }
+    .progress-text { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+    /* ── 结果区 ── */
+    .result-box {
+      display: none;
+      margin-top: 20px;
+      padding: 16px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .result-box.show { display: block; }
+    .result-box.success {
+      background: #edfaf1;
+      border: 1px solid #a8d5b8;
+      color: var(--success);
+    }
+    .result-box.error {
+      background: #fdf3f2;
+      border: 1px solid #f1a9a0;
+      color: var(--red);
+    }
+
+    /* ── 分割线 ── */
+    .divider { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+
+    /* ── 表单 ── */
+    .form-row { display: flex; gap: 16px; margin-bottom: 16px; }
+    .form-row.col1 { flex-direction: column; }
+    .form-group { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .form-group label { font-size: 13px; font-weight: 500; color: #555; }
+    .form-group input, .form-group select, .form-group textarea {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: .2s;
+      width: 100%;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+      border-color: var(--red);
+      box-shadow: 0 0 0 2px rgba(192,57,43,.1);
+    }
+    .form-group textarea { min-height: 80px; resize: vertical; }
+    .form-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .form-check input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+
+    /* ── 内容审查 ── */
+    .review-summary {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .review-stat {
+      flex: 1;
+      min-width: 120px;
+      background: var(--gray);
+      border-radius: 8px;
+      padding: 14px 16px;
+      text-align: center;
+    }
+    .review-stat .num { font-size: 28px; font-weight: 700; color: var(--red); }
+    .review-stat .label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .issue-list { display: flex; flex-direction: column; gap: 10px; }
+    .issue-item {
+      padding: 12px 16px;
+      border-radius: 8px;
+      border-left: 3px solid;
+      font-size: 13px;
+    }
+    .issue-item.error   { background: #fdf3f2; border-color: var(--red); }
+    .issue-item.warning { background: #fef9ec; border-color: var(--warning); }
+    .issue-item.info    { background: #eaf4fb; border-color: var(--info); }
+    .issue-item .issue-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .issue-item .issue-type { font-weight: 600; }
+    .issue-item .issue-line { color: var(--muted); font-size: 12px; }
+    .issue-item .issue-text {
+      font-family: "Courier New", monospace;
+      background: rgba(0,0,0,.05);
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-bottom: 4px;
+    }
+    .issue-item .issue-msg { color: #555; }
+    .issue-item .issue-suggest { color: var(--info); margin-top: 4px; }
+    .no-issues {
+      text-align: center;
+      padding: 32px;
+      color: var(--success);
+      font-size: 15px;
+    }
+    .no-issues .ok-icon { font-size: 40px; margin-bottom: 10px; }
+
+    /* ── 公文起草 ── */
+    .section-hints { display: flex; flex-direction: column; gap: 12px; }
+    .section-hint-item { display: flex; flex-direction: column; gap: 4px; }
+    .section-hint-item label { font-size: 13px; font-weight: 500; color: #555; }
+
+    /* ── 底部说明 ── */
+    footer {
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 24px 0 40px;
+    }
+    footer a { color: var(--red); text-decoration: none; }
+
+    /* ── 徽标提示 ── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--red);
+      color: #fff;
+      vertical-align: middle;
+      margin-left: 4px;
+    }
+
+    /* ── 响应式 ── */
+    @media (max-width: 600px) {
+      main { padding: 0 8px; }
+      .tab-panel { padding: 16px; }
+      .form-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🏗️ 中建四局公文格式化工具</h1>
+  <span class="version">v1.0 · 2023.9.27规范</span>
+</header>
+
+<main>
+  <!-- 标签页导航 -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('format', this)">
+      📄 格式化
+    </button>
+    <button class="tab-btn" onclick="switchTab('review', this)">
+      🔍 内容审查
+    </button>
+    <button class="tab-btn" onclick="switchTab('draft', this)">
+      ✍️ 公文起草
+    </button>
+  </div>
+
+  <!-- ══════ Tab 1: 格式化 ══════ -->
+  <div id="tab-format" class="tab-panel active">
+    <div style="margin-bottom:20px">
+      <h2 style="font-size:16px;margin-bottom:6px">上传文档，自动套用中建四局公文格式</h2>
+      <p style="font-size:13px;color:var(--muted)">
+        支持 .docx .txt .md · 自动识别标题层级 · 规范字体行距页边距 · 生成标准页码
+      </p>
+    </div>
+
+    <div class="drop-zone" id="dropZone1" onclick="document.getElementById('fileInput1').click()">
+      <div class="icon">📁</div>
+      <div class="hint">将文件拖拽到此处，或点击选择文件</div>
+      <div class="fmt">支持格式：.docx &nbsp; .txt &nbsp; .md（最大10MB）</div>
+    </div>
+    <input type="file" id="fileInput1" accept=".docx,.txt,.md" />
+
+    <div class="file-preview" id="preview1">
+      <span>📄</span>
+      <span class="fname" id="fname1">—</span>
+      <span class="fsize" id="fsize1"></span>
+      <button class="remove-btn" onclick="clearFile(1)" title="移除">✕</button>
+    </div>
+
+    <div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap">
+      <button class="btn btn-primary" id="formatBtn" onclick="doFormat()" disabled>
+        ⚡ 开始格式化
+      </button>
+      <button class="btn btn-outline" onclick="clearFile(1)">清除</button>
+    </div>
+
+    <div class="progress-wrap" id="progress1">
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <div class="progress-text">正在处理，请稍候…</div>
+    </div>
+    <div class="result-box" id="result1"></div>
+
+    <hr class="divider" />
+    <div style="font-size:13px;color:var(--muted);line-height:2">
+      <b>格式规范摘要（2023.9.27版）</b><br/>
+      • 页面：A4 · 上37mm / 下35mm / 左28mm / 右26mm<br/>
+      • 标题：方正小标宋简体 二号，居中不加粗<br/>
+      • 一级标题：黑体 三号 &nbsp;|&nbsp; 二级：楷体_GB2312 三号 &nbsp;|&nbsp; 三~五级：仿宋_GB2312 三号<br/>
+      • 正文：仿宋_GB2312 三号，首行缩进2字符，数字 Times New Roman<br/>
+      • 行距：固定值 28.9磅（579 twips） &nbsp;|&nbsp; 表格：仿宋_GB2312 小四<br/>
+      • 页脚页码：宋体四号居中，格式 — 1 —
+    </div>
+  </div>
+
+  <!-- ══════ Tab 2: 内容审查 ══════ -->
+  <div id="tab-review" class="tab-panel">
+    <div style="margin-bottom:20px">
+      <h2 style="font-size:16px;margin-bottom:6px">上传公文，自动检查内容规范</h2>
+      <p style="font-size:13px;color:var(--muted)">
+        审查范围：标题层级 · 结束语 · 用词规范 · 标点规范 · 长句检测
+      </p>
+    </div>
+
+    <div class="drop-zone" id="dropZone2" onclick="document.getElementById('fileInput2').click()">
+      <div class="icon">🔍</div>
+      <div class="hint">上传 .docx 文件进行内容审查</div>
+      <div class="fmt">仅支持 .docx 格式</div>
+    </div>
+    <input type="file" id="fileInput2" accept=".docx" />
+
+    <div class="file-preview" id="preview2">
+      <span>📄</span>
+      <span class="fname" id="fname2">—</span>
+      <span class="fsize" id="fsize2"></span>
+      <button class="remove-btn" onclick="clearFile(2)">✕</button>
+    </div>
+
+    <div style="margin-top:20px">
+      <button class="btn btn-primary" id="reviewBtn" onclick="doReview()" disabled>
+        🔍 开始审查
+      </button>
+    </div>
+
+    <div class="progress-wrap" id="progress2">
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <div class="progress-text">正在审查文档内容…</div>
+    </div>
+
+    <div id="reviewResult" style="margin-top:20px;display:none">
+      <div class="review-summary" id="reviewSummary"></div>
+      <div class="issue-list" id="issueList"></div>
+    </div>
+  </div>
+
+  <!-- ══════ Tab 3: 公文起草 ══════ -->
+  <div id="tab-draft" class="tab-panel">
+    <div style="margin-bottom:20px">
+      <h2 style="font-size:16px;margin-bottom:6px">填写要素，生成标准公文模板</h2>
+      <p style="font-size:13px;color:var(--muted)">
+        支持文种：请示 · 报告 · 通知 · 批复 · 函 · 会议纪要
+      </p>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>文种 <span style="color:var(--red)">*</span></label>
+        <select id="draftType" onchange="updateSections()">
+          <option value="请示">请示</option>
+          <option value="报告" selected>报告</option>
+          <option value="通知">通知</option>
+          <option value="批复">批复</option>
+          <option value="函">函</option>
+          <option value="会议纪要">会议纪要</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>标题</label>
+        <input type="text" id="draftTitle" placeholder="如：关于XXX的报告" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>发文机关</label>
+        <input type="text" id="draftSender" placeholder="如：中国建筑第四工程局有限公司" />
+      </div>
+      <div class="form-group">
+        <label>主送单位</label>
+        <input type="text" id="draftRecipient" placeholder="如：中国建筑股份有限公司" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>发文字号</label>
+        <input type="text" id="draftNumber" placeholder="如：中建四局〔2026〕1号" />
+      </div>
+      <div class="form-group">
+        <label>日期</label>
+        <input type="text" id="draftDate" placeholder="如：2026年4月23日" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-check">
+          <input type="checkbox" id="includeHeader" />
+          生成红头（发文机关标志）
+        </label>
+      </div>
+    </div>
+
+    <hr class="divider" />
+    <div style="font-size:14px;font-weight:600;margin-bottom:12px;color:#444">
+      各节内容提示 <span style="font-size:12px;font-weight:400;color:var(--muted)">（留空则使用默认占位文字）</span>
+    </div>
+    <div class="section-hints" id="sectionHints"></div>
+
+    <div style="margin-top:24px;display:flex;gap:12px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="doDraft()">✍️ 生成公文模板</button>
+      <button class="btn btn-outline" onclick="clearDraft()">重置</button>
+    </div>
+
+    <div class="progress-wrap" id="progress3">
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <div class="progress-text">正在生成公文…</div>
+    </div>
+    <div class="result-box" id="result3"></div>
+  </div>
+</main>
+
+<footer>
+  中建四局公文格式化工具 &nbsp;·&nbsp; 格式依据《中建四局公文基本格式》2023.9.27版<br/>
+  技术支持：AI工作助手 tb 📋
+</footer>
+
+<script>
+  // ── API基础地址（相对路径，适配任何部署环境）
+  const API = '';
+
+  // ── 文种配置（前端同步，减少请求）
+  const DRAFT_TEMPLATES = {
+    '请示':   { sections: ['背景与目的','主要内容','拟采取的措施','请示事项'] },
+    '报告':   { sections: ['工作概况','主要工作进展','存在问题','下一步计划'] },
+    '通知':   { sections: ['通知事项','具体要求','注意事项'] },
+    '批复':   { sections: ['批复意见','具体要求'] },
+    '函':     { sections: ['事由说明','主要内容','请求/告知事项'] },
+    '会议纪要': { sections: ['会议基本情况','会议研究事项','议定事项','其他事项'] },
+  };
+
+  // ══════════════════════ 标签页切换 ══════════════════════
+  function switchTab(name, btn) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  // ══════════════════════ 文件处理工具 ══════════════════════
+  const fileStore = {};
+
+  function bindDropZone(zoneId, inputId, tabIdx) {
+    const zone  = document.getElementById(zoneId);
+    const input = document.getElementById(inputId);
+
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const files = [...e.dataTransfer.files];
+      if (files.length) setFile(tabIdx, files[0]);
+    });
+    input.addEventListener('change', () => {
+      if (input.files.length) setFile(tabIdx, input.files[0]);
+      input.value = '';
+    });
+  }
+
+  function setFile(tabIdx, file) {
+    fileStore[tabIdx] = file;
+    document.getElementById(`fname${tabIdx}`).textContent = file.name;
+    document.getElementById(`fsize${tabIdx}`).textContent = formatSize(file.size);
+    document.getElementById(`preview${tabIdx}`).classList.add('show');
+    if (tabIdx === 1) document.getElementById('formatBtn').disabled = false;
+    if (tabIdx === 2) document.getElementById('reviewBtn').disabled = false;
+    // 清掉旧结果
+    hideResult(tabIdx);
+    if (tabIdx === 2) { document.getElementById('reviewResult').style.display='none'; }
+  }
+
+  function clearFile(tabIdx) {
+    delete fileStore[tabIdx];
+    document.getElementById(`preview${tabIdx}`).classList.remove('show');
+    if (tabIdx === 1) document.getElementById('formatBtn').disabled = true;
+    if (tabIdx === 2) document.getElementById('reviewBtn').disabled = true;
+    hideResult(tabIdx);
+    if (tabIdx === 2) { document.getElementById('reviewResult').style.display='none'; }
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/1024/1024).toFixed(1) + ' MB';
+  }
+
+  function showProgress(tabIdx) {
+    document.getElementById(`progress${tabIdx}`).classList.add('show');
+  }
+  function hideProgress(tabIdx) {
+    document.getElementById(`progress${tabIdx}`).classList.remove('show');
+  }
+  function showResult(tabIdx, ok, msg) {
+    const el = document.getElementById(`result${tabIdx}`);
+    el.className = `result-box show ${ok ? 'success' : 'error'}`;
+    el.innerHTML = msg;
+  }
+  function hideResult(tabIdx) {
+    if (document.getElementById(`result${tabIdx}`)) {
+      document.getElementById(`result${tabIdx}`).className = 'result-box';
+    }
+  }
+
+  // ══════════════════════ Tab1: 格式化 ══════════════════════
+  async function doFormat() {
+    const file = fileStore[1];
+    if (!file) return;
+
+    document.getElementById('formatBtn').disabled = true;
+    showProgress(1);
+    hideResult(1);
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+      const resp = await fetch(API + '/api/format', { method: 'POST', body: fd });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ msg: `服务错误 ${resp.status}` }));
+        showResult(1, false, `❌ 转换失败：${err.msg}`);
+        return;
+      }
+      // 触发下载
+      const blob = await resp.blob();
+      const stem = file.name.replace(/\.[^.]+$/, '');
+      downloadBlob(blob, `${stem}_公文格式.docx`);
+      showResult(1, true, `✅ 格式化完成！已自动下载 <b>${stem}_公文格式.docx</b>`);
+    } catch(e) {
+      showResult(1, false, `❌ 网络错误：${e.message}`);
+    } finally {
+      hideProgress(1);
+      document.getElementById('formatBtn').disabled = false;
+    }
+  }
+
+  // ══════════════════════ Tab2: 内容审查 ══════════════════════
+  async function doReview() {
+    const file = fileStore[2];
+    if (!file) return;
+
+    document.getElementById('reviewBtn').disabled = true;
+    showProgress(2);
+    document.getElementById('reviewResult').style.display = 'none';
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+      const resp = await fetch(API + '/api/review', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (!data.ok) {
+        alert(`审查失败：${data.msg}`);
+        return;
+      }
+      renderReview(data);
+    } catch(e) {
+      alert(`网络错误：${e.message}`);
+    } finally {
+      hideProgress(2);
+      document.getElementById('reviewBtn').disabled = false;
+    }
+  }
+
+  function renderReview(data) {
+    const el = document.getElementById('reviewResult');
+    el.style.display = 'block';
+
+    // 统计卡片
+    const { stats, issues, doc_type, summary } = data;
+    const errorCount   = issues.filter(i => i.level === 'error').length;
+    const warningCount = issues.filter(i => i.level === 'warning').length;
+    const infoCount    = issues.filter(i => i.level === 'info').length;
+
+    document.getElementById('reviewSummary').innerHTML = `
+      <div class="review-stat">
+        <div class="num">${stats.paragraphs}</div>
+        <div class="label">审查段落数</div>
+      </div>
+      <div class="review-stat">
+        <div class="num" style="color:var(--red)">${errorCount}</div>
+        <div class="label">错误项</div>
+      </div>
+      <div class="review-stat">
+        <div class="num" style="color:var(--warning)">${warningCount}</div>
+        <div class="label">警告项</div>
+      </div>
+      <div class="review-stat">
+        <div class="num" style="color:var(--info)">${infoCount}</div>
+        <div class="label">提示项</div>
+      </div>
+      <div class="review-stat">
+        <div class="num" style="font-size:18px">${doc_type}</div>
+        <div class="label">识别文种</div>
+      </div>
+    `;
+
+    const listEl = document.getElementById('issueList');
+    if (issues.length === 0) {
+      listEl.innerHTML = `
+        <div class="no-issues">
+          <div class="ok-icon">✅</div>
+          <div>未发现明显问题，文档内容符合规范！</div>
+        </div>
+      `;
+      return;
+    }
+
+    // 按 error > warning > info 排序
+    const sorted = [...issues].sort((a, b) => {
+      const order = { error: 0, warning: 1, info: 2 };
+      return (order[a.level] || 3) - (order[b.level] || 3);
+    });
+
+    listEl.innerHTML = sorted.map(issue => {
+      const icons = { error: '🔴', warning: '🟡', info: '🔵' };
+      return `
+        <div class="issue-item ${issue.level}">
+          <div class="issue-header">
+            <span>${icons[issue.level] || '⚪'}</span>
+            <span class="issue-type">${issue.type}</span>
+            ${issue.line ? `<span class="issue-line">第${issue.line}段</span>` : ''}
+          </div>
+          ${issue.text ? `<div class="issue-text">${escHtml(issue.text)}</div>` : ''}
+          <div class="issue-msg">${issue.msg}</div>
+          ${issue.suggestion ? `<div class="issue-suggest">💡 建议：${issue.suggestion}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  // ══════════════════════ Tab3: 公文起草 ══════════════════════
+  function updateSections() {
+    const type = document.getElementById('draftType').value;
+    const sections = DRAFT_TEMPLATES[type]?.sections || [];
+    const container = document.getElementById('sectionHints');
+    container.innerHTML = sections.map(s => `
+      <div class="section-hint-item">
+        <label>${s}</label>
+        <textarea id="hint_${escId(s)}" placeholder="（可选）填写${s}的要点或关键信息…"></textarea>
+      </div>
+    `).join('');
+  }
+
+  async function doDraft() {
+    const type = document.getElementById('draftType').value;
+    const sections = DRAFT_TEMPLATES[type]?.sections || [];
+    const hints = {};
+    sections.forEach(s => {
+      const val = document.getElementById(`hint_${escId(s)}`)?.value?.trim();
+      if (val) hints[s] = val;
+    });
+
+    showProgress(3);
+    hideResult(3);
+
+    const payload = {
+      doc_type:       type,
+      title:          document.getElementById('draftTitle').value.trim(),
+      sender:         document.getElementById('draftSender').value.trim(),
+      recipient:      document.getElementById('draftRecipient').value.trim(),
+      date:           document.getElementById('draftDate').value.trim(),
+      doc_number:     document.getElementById('draftNumber').value.trim(),
+      include_header: document.getElementById('includeHeader').checked,
+      content_hints:  hints,
+    };
+
+    try {
+      const resp = await fetch(API + '/api/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ msg: `服务错误 ${resp.status}` }));
+        showResult(3, false, `❌ 起草失败：${err.msg}`);
+        return;
+      }
+      const blob = await resp.blob();
+      const title = payload.title || `${type}草稿`;
+      downloadBlob(blob, `${title}.docx`);
+      showResult(3, true, `✅ 公文起草完成！已自动下载 <b>${title}.docx</b>`);
+    } catch(e) {
+      showResult(3, false, `❌ 网络错误：${e.message}`);
+    } finally {
+      hideProgress(3);
+    }
+  }
+
+  function clearDraft() {
+    ['draftType','draftTitle','draftSender','draftRecipient','draftDate','draftNumber'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el.tagName === 'SELECT') el.selectedIndex = 1;
+      else el.value = '';
+    });
+    document.getElementById('includeHeader').checked = false;
+    updateSections();
+    hideResult(3);
+  }
+
+  // ══════════════════════ 工具函数 ══════════════════════
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function escId(s) {
+    return s.replace(/[^\w\u4e00-\u9fa5]/g, '_');
+  }
+
+  // ── 初始化
+  bindDropZone('dropZone1', 'fileInput1', 1);
+  bindDropZone('dropZone2', 'fileInput2', 2);
+  updateSections();
+</script>
+</body>
+</html>
