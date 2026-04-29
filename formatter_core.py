@@ -105,6 +105,9 @@ def is_main_title(text):
     t = text.strip()
     if not t or len(t) > 25:
         return False
+    # 排除时间行（如 "2026年4月"、"2026年4月28日"）
+    if re.match(r'^\d{4}年\d{1,2}月\d{0,2}日?\s*$', t):
+        return False
     for pat in [
         r'^[一二三四五六七八九十]+、',
         r'^（[一二三四五六七八九十]+）',
@@ -249,10 +252,96 @@ def _add_page_number(doc):
     p_elem.append(make_run(' —', False))
 
 
+def _check_punctuation_issues(paragraphs_text):
+    """句末标点检测：找出未以句号/问号/叹号结尾的正文段落"""
+    issues = []
+    for i, item in enumerate(paragraphs_text):
+        if item[0] != 'p':
+            continue
+        text = item[1].strip()
+        if not text or len(text) <= 10:
+            continue
+        # 标记是否为编号型段落（用于后续判断）
+        is_numbered = bool(re.match(r'^\d+[.、．]\s*', text))
+        # 跳过标题型文本
+        if re.match(r'^[一二三四五六七八九十]+、', text):
+            continue
+        if re.match(r'^（[一二三四五六七八九十]+）', text):
+            continue
+        if re.match(r'^（\d+）', text):
+            continue
+        if re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text):
+            continue
+        # 纯编号+标题行跳过标点检测（如 "1.科技部："）
+        if is_numbered and len(text) <= 12:
+            continue
+        # 跳过纯数字/百分比/短数据行
+        if re.match(r'^[\d,.\-+%：:（）()]+$', text):
+            continue
+        # 跳过包含冒号结尾的引导句（如 "科技部："、"商务部："）
+        if re.search(r'[：:]$', text):
+            continue
+        # 跳过纯短数据行（无中文内容且<=15字）
+        if len(text) <= 15 and not re.search(r'[\u4e00-\u9fff]', text):
+            continue
+        # 跳过无标点的短标题行（<=20字且不含任何句内标点、不含中文字数>5）
+        if len(text) <= 20 and not re.search(r'[，。；！？]', text):
+            continue
+        # 检测句末标点
+        last_char = text[-1]
+        if last_char not in ('。', '？', '！', '…', '"', '"', ')', '）', '；'):
+            issues.append((i, text[:60]))
+    return issues
+
+
+def _check_subheading_issues(paragraphs_text):
+    """子标题序号混乱检测：原文含 X.Y 格式但被当作普通段落处理"""
+    issues = []
+    for i, item in enumerate(paragraphs_text):
+        if item[0] != 'p':
+            continue
+        text = item[1].strip()
+        if not text:
+            continue
+        # 检测 X.Y 格式开头（如 1.1, 2.3）
+        m = re.match(r'^(\d+)\.(\d+)[.、．]?\s*(.*)', text)
+        if m:
+            major = int(m.group(1))
+            minor = int(m.group(2))
+            content = m.group(3)
+            if minor > 0:
+                issues.append((i, text[:60], major, minor, content))
+    return issues
+
+
+def _check_h3_numbering_issues(paragraphs_text):
+    """三级标题编号不规范检测：如 '1.是' '2.是' 应为 '一是' '二是'"""
+    issues = []
+    for i, item in enumerate(paragraphs_text):
+        if item[0] != 'p':
+            continue
+        text = item[1].strip()
+        if not text:
+            continue
+        # 检测 X.是/且/但/将/要 等不规范的三级标题编号
+        m = re.match(r'^(\d+)[.、．]\s*(是|且|但|将|要|在|已|以|对|为|从|按|于)\s*(.*)', text)
+        if m:
+            num = int(m.group(1))
+            word = m.group(2)
+            rest = m.group(3)
+            issues.append((i, text[:70], num, word))
+    return issues
+
+
 def format_document(src_path: str, dst_path: str):
-    """主转换函数：读取 → 应用公文格式 → 保存"""
+    """主转换函数：读取 → 应用公文格式 → 保存。
+    
+    返回格式：(dst_path, warnings_list)
+    warnings_list 中每项为 dict，包含 type 和 detail 字段。
+    """
     ext = Path(src_path).suffix.lower()
     paragraphs_text = []
+    warnings = []
 
     if ext == '.docx':
         src_doc = Document(src_path)
@@ -378,6 +467,37 @@ def format_document(src_path: str, dst_path: str):
                 item[4], item[5]
             )
 
+    # 运行审查检测
+    punct_issues = _check_punctuation_issues(paragraphs_text)
+    if punct_issues:
+        warnings.append({
+            'type': '句末标点缺失',
+            'detail': f'共 {len(punct_issues)} 处段落可能缺少句末标点（。）：\n'
+                      + '\n'.join(f'  段落{idx+1}: "{txt}…"' for idx, txt in punct_issues)
+        })
+
+    subhead_issues = _check_subheading_issues(paragraphs_text)
+    if subhead_issues:
+        detail_lines = []
+        for idx, txt, major, minor, content in subhead_issues:
+            detail_lines.append(f'  段落{idx+1}: "{txt}" — 原文使用 {major}.{minor} 多级编号')
+        detail_lines.append('  建议：可将多级编号改为四级标题①②③格式，请人工确认。')
+        warnings.append({
+            'type': '子标题序号格式',
+            'detail': f'检测到 {len(subhead_issues)} 处多级编号（X.Y格式）：\n' + '\n'.join(detail_lines)
+        })
+
+    h3_issues = _check_h3_numbering_issues(paragraphs_text)
+    if h3_issues:
+        detail_lines = []
+        for idx, txt, num, word in h3_issues:
+            detail_lines.append(f'  段落{idx+1}: "{txt}" — 编号 "{num}." 后直接跟"{word}"')
+        detail_lines.append('  建议：此类编号建议改为 "一是…""二是…" 格式，请人工确认。')
+        warnings.append({
+            'type': '三级标题编号不规范',
+            'detail': f'检测到 {len(h3_issues)} 处编号后直接跟动词：\n' + '\n'.join(detail_lines)
+        })
+
     # 新建文档
     doc = Document()
     section = doc.sections[0]
@@ -402,6 +522,8 @@ def format_document(src_path: str, dst_path: str):
     nf.set(qn('w:eastAsia'), FONT_FANGSONG)
 
     title_mode = True
+    title_count = 0  # 连续标题段计数，防止将正文标题误判为主标题
+    title_ended = False  # 标记标题区是否已结束
     counter = HeadingCounter()
 
     for i, item in enumerate(paragraphs_text):
@@ -499,12 +621,23 @@ def format_document(src_path: str, dst_path: str):
             continue
 
         if title_mode and is_main_title(text):
+            title_count += 1
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             set_para_spacing(p)
             run = p.add_run(text)
             set_run_font(run, FONT_XIAOBIAOSONG, SIZE_ERHAO, bold=False)
+            # 超过2段连续标题则退出标题模式
+            if title_count >= 2:
+                title_mode = False
+                title_ended = True
             continue
+
+        # 标题区结束后插入一个空行
+        if title_ended:
+            p = doc.add_paragraph()
+            set_para_spacing(p)
+            title_ended = False
 
         title_mode = False
         level = detect_level(text)
@@ -526,16 +659,49 @@ def format_document(src_path: str, dst_path: str):
                 level = 'h1'
 
         clean_heading = text
-        std_prefix_match = (
-            re.match(r'^[一二三四五六七八九十]+、', text)
-            or re.match(r'^（[一二三四五六七八九十]+）', text)
-            or re.match(r'^\d+[.、．]\s*', text)
-            or re.match(r'^（\d+）', text)
-        )
+        std_prefix_match = None
+        is_multilevel = bool(re.match(r'^\d+\.\d+', text))
+
+        # 检测 X.是 / X.要 / X.以 等编号+动词的不规范格式
+        is_verb_prefix = bool(re.match(r'^\d+[.、．]\s*[是是以要为将把让使被]', text))
+
+        if not is_multilevel:
+            std_prefix_match = (
+                re.match(r'^[一二三四五六七八九十]+、', text)
+                or re.match(r'^（[一二三四五六七八九十]+）', text)
+                or re.match(r'^\d+[.、．]\s*', text)
+                or re.match(r'^（\d+）', text)
+            )
         if std_prefix_match and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             clean_heading = text[std_prefix_match.end():].lstrip()
 
-        if level in ('h1', 'h2', 'h3', 'h4', 'h5'):
+        if is_multilevel and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
+            # X.Y 多级编号：保留原文编号，不自动重编
+            p = doc.add_paragraph()
+            apply_heading_format(p, level, text)
+        elif is_verb_prefix and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
+            # X.是/要 等不规范编号：保留原文编号不重编，仅对问题编号部分标黄提醒
+            verb_m = re.match(r'^(\d+[.、．])', text)
+            prefix_text = verb_m.group(1) if verb_m else ''
+            rest_text = text[verb_m.end():] if verb_m else text
+            p = doc.add_paragraph()
+            apply_heading_format(p, 'body', '')
+            # 清空默认run，手动拆分为两个run
+            for r in list(p.runs):
+                r._r.getparent().remove(r._r)
+            if prefix_text:
+                run_pre = p.add_run(prefix_text)
+                set_run_font(run_pre, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+                # 仅对编号部分添加黄色高亮（字符级 shd）
+                rPr = run_pre._r.get_or_add_rPr()
+                shd = OxmlElement('w:shd')
+                shd.set(qn('w:val'), 'clear')
+                shd.set(qn('w:color'), 'auto')
+                shd.set(qn('w:fill'), 'FFFF00')
+                rPr.append(shd)
+            run_rest = p.add_run(rest_text)
+            set_run_font(run_rest, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+        elif level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             prefix = counter.next(level)
             p = doc.add_paragraph()
             apply_heading_format(p, level, clean_heading, prefix=prefix)
@@ -545,4 +711,4 @@ def format_document(src_path: str, dst_path: str):
 
     _add_page_number(doc)
     doc.save(dst_path)
-    return dst_path
+    return dst_path, warnings
