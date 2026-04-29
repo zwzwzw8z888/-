@@ -149,11 +149,12 @@ class HeadingCounter:
         return ''
 
 
-def apply_heading_format(para, level, text, prefix=''):
+def apply_heading_format(para, level, text, prefix='', no_indent=False):
     para.clear()
     para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     set_para_spacing(para)
-    set_para_indent(para, 2)
+    if not no_indent:
+        set_para_indent(para, 2)
     display = prefix + text
     font_map = {
         'h1': FONT_HEITI,
@@ -193,6 +194,49 @@ def _calc_smart_col_widths(rows_data, num_cols):
         else:
             weights.append(4000)
     return weights
+
+
+def _add_run_highlight(run, color='FFFF00'):
+    """给 run 添加黄色底纹高亮（字符级 shd）"""
+    rPr = run._r.get_or_add_rPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), color)
+    rPr.append(shd)
+
+
+def _add_paragraph_with_highlight(para, text, cn_font, size_pt, bold=False,
+                                   highlight_start=None, highlight_end=None,
+                                   highlight_color='FFFF00'):
+    """添加文本，可选对 [highlight_start:highlight_end] 范围标黄。
+    None 表示不标黄；-1 表示标黄末尾2个字符。
+    """
+    if highlight_start is not None and highlight_end is not None:
+        if highlight_end == -1:
+            # 标黄末尾2个字符
+            if len(text) >= 2:
+                highlight_start = len(text) - 2
+                highlight_end = len(text)
+            else:
+                highlight_start = 0
+                highlight_end = len(text)
+        # 前半部分
+        if highlight_start > 0:
+            run_before = para.add_run(text[:highlight_start])
+            set_run_font(run_before, cn_font, size_pt, bold)
+        # 标黄部分
+        run_hl = para.add_run(text[highlight_start:highlight_end])
+        set_run_font(run_hl, cn_font, size_pt, bold)
+        _add_run_highlight(run_hl, highlight_color)
+        # 后半部分
+        if highlight_end < len(text):
+            run_after = para.add_run(text[highlight_end:])
+            set_run_font(run_after, cn_font, size_pt, bold)
+    else:
+        run = para.add_run(text)
+        set_run_font(run, cn_font, size_pt, bold)
+    return para
 
 
 def _add_page_number(doc):
@@ -498,6 +542,55 @@ def format_document(src_path: str, dst_path: str):
             'detail': f'检测到 {len(h3_issues)} 处编号后直接跟动词：\n' + '\n'.join(detail_lines)
         })
 
+    # ──── 标题句末标点检测 ────
+    title_punct_issues = []
+    for idx, item in enumerate(paragraphs_text):
+        if item[0] != 'p':
+            continue
+        text = item[1].strip()
+        if not text or len(text) <= 5:
+            continue
+        # 检测各级标题（文本编号前缀）
+        level = detect_level(text)
+        wnl = item[3] if len(item) > 3 else None
+        # 有文本编号前缀的才算标题候选
+        has_text_prefix = bool(
+            re.match(r'^[一二三四五六七八九十]+、', text)
+            or re.match(r'^（[一二三四五六七八九十]+）', text)
+            or re.match(r'^\d+[.、．]\s*\S', text)
+            or re.match(r'^（\d+）', text)
+            or re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text)
+        )
+        if not has_text_prefix:
+            continue
+        # Word编号但无文本前缀的长段落不算标题
+        is_word_num_body = (wnl is not None and not has_text_prefix and len(text) > 25)
+        if is_word_num_body:
+            continue
+        # 有编号前缀但内容超长（>30字且有句号）的是正文不是标题
+        if len(text) > 30 and '。' in text:
+            continue
+        # 标题应以非句号结尾，如果以句号结尾则标记
+        if text.rstrip()[-1] in ('。', '；', '，'):
+            title_punct_issues.append((idx, text, text.rstrip()[-1]))
+
+    # 建立审查高亮标记集合
+    punct_para_indices = {idx for idx, _ in punct_issues}          # 句末标点缺失
+    subhead_para_indices = {idx for idx, _, _, _, _ in subhead_issues}  # X.Y多级编号
+    h3_para_indices = {idx for idx, _, _, _ in h3_issues}          # X.是编号
+    title_punct_para_indices = {idx for idx, _, _ in title_punct_issues}  # 标题句末标点
+
+    # 标题句末标点检测
+    if title_punct_issues:
+        detail_lines = []
+        for idx, txt, punct in title_punct_issues:
+            detail_lines.append(f'  段落{idx+1}: "{txt}" — 标题末尾不应有"{punct}"')
+        warnings.append({
+            'type': '标题句末标点',
+            'detail': f'检测到 {len(title_punct_issues)} 处标题包含句末标点（标题末尾不应有标点符号）：\n'
+                      + '\n'.join(detail_lines)
+        })
+
     # 新建文档
     doc = Document()
     section = doc.sections[0]
@@ -521,10 +614,131 @@ def format_document(src_path: str, dst_path: str):
         rPr.insert(0, nf)
     nf.set(qn('w:eastAsia'), FONT_FANGSONG)
 
+    # ──── 预扫描：检测文档是否用 X. 作为顶层编号（无中文一、二、三、） ────
+    has_cn_h1 = False
+    for item in paragraphs_text:
+        if item[0] == 'p':
+            t = item[1].strip()
+            if re.match(r'^[一二三四五六七八九十]+、', t):
+                has_cn_h1 = True
+                break
+    # 如果没有中文一级编号，但存在 X、或 X.（非X.Y）编号段落，
+    # 且 X 后面的子标题是 （X）或 (X)，则提升所有 X. 为 h1
+    promote_x_to_h1 = False
+    promote_body_indices = set()  # 需要提升为 h1 的 body 级段落索引
+    if not has_cn_h1:
+        x_prefix_paras = []  # X. 或 X、 开头的段落索引
+        for idx, item in enumerate(paragraphs_text):
+            if item[0] == 'p':
+                t = item[1].strip()
+                if re.match(r'^\d+[.、．]\s*\S', t) and not re.match(r'^\d+\.\d+', t):
+                    x_prefix_paras.append(idx)
+        if x_prefix_paras:
+            # 检查任意一个 X. 段落后是否有 （X）或 (X) 子标题
+            has_sub_level = False
+            for xpi in x_prefix_paras[:5]:
+                for j in range(xpi + 1, min(xpi + 6, len(paragraphs_text))):
+                    if paragraphs_text[j][0] == 'p':
+                        sub_t = paragraphs_text[j][1].strip()
+                        if re.match(r'^（\d+）', sub_t) or re.match(r'^[（(]\d+[)）]', sub_t):
+                            has_sub_level = True
+                            break
+                if has_sub_level:
+                    break
+            # 只要有子标题结构模式，就提升所有 X.（非X.Y）为 h1
+            if has_sub_level and len(x_prefix_paras) >= 2:
+                promote_x_to_h1 = True
+                # 确定标题区域结束位置（首个 X. 前缀段落之前）
+                title_end = min(x_prefix_paras) if x_prefix_paras else 0
+                # 收集需要提升的 body 段落：仅限无 Word 编号、无编号前缀、
+                # 长度极短（<=15字）且夹在两个 X. 段落之间的纯标题行
+                for idx, item in enumerate(paragraphs_text):
+                    if idx < title_end:
+                        continue  # 跳过标题区域
+                    if item[0] == 'p' and item[1].strip():
+                        t = item[1].strip()
+                        # 有 Word 编号的段落一概不提升
+                        is_word_num = (len(item) > 4 and item[4] and item[4] != '0')
+                        if is_word_num:
+                            continue
+                        # 只提升极短的无编号标题（<=15字，排除长句）
+                        is_short = (len(t) <= 15
+                                    and not re.search(r'[。；]', t)
+                                    and not re.search(r'^（\d+）', t)
+                                    and not t.startswith('附件'))
+                        if not is_short:
+                            continue
+                        # 检查前后是否有 X. 前缀段落（严格只看 X. 段落，不看 Word 编号段落）
+                        has_x_neighbor = False
+                        for offset in (-1, -2, 1, 2):
+                            ni = idx + offset
+                            if 0 <= ni < len(paragraphs_text) and paragraphs_text[ni][0] == 'p':
+                                n_t = paragraphs_text[ni][1].strip()
+                                if re.match(r'^\d+[.、．]\s*\S', n_t) and not re.match(r'^\d+\.\d+', n_t):
+                                    has_x_neighbor = True
+                                    break
+                        if has_x_neighbor:
+                            promote_body_indices.add(idx)
+
     title_mode = True
     title_count = 0  # 连续标题段计数，防止将正文标题误判为主标题
     title_ended = False  # 标记标题区是否已结束
     counter = HeadingCounter()
+
+    # 预计算：标记哪些段落索引最终是标题（用于空行过滤）
+    is_heading_index = set()
+
+    def _precompute_heading(idx, item):
+        """预计算单个段落的最终层级（不含 counter），返回 level"""
+        if item[0] != 'p':
+            return None
+        raw_text = item[1]
+        text = clean_text(raw_text)
+        if not text:
+            return None
+        if is_main_title(text):
+            return 'title'
+        level = detect_level(text)
+        wnl = item[3] if len(item) > 3 else None
+        if wnl is not None:
+            level = wnl
+        if promote_x_to_h1 and level == 'h3':
+            is_long_sentence = '。' in text and len(text) > 30
+            if (re.match(r'^\d+[.、．]\s*\S', text)
+                and not re.match(r'^\d+\.\d+', text)
+                and not re.match(r'^\d+[.、．]\s*[是是以要为将把让使被]', text)
+                and not is_long_sentence):
+                level = 'h1'
+        if promote_x_to_h1 and level == 'body' and wnl is None and idx in promote_body_indices:
+            level = 'h1'
+        # Word 编号隐藏了编号的短段落（无文本前缀 ≤15字），promote为 h1
+        if promote_x_to_h1 and wnl is not None and wnl in ('h1', 'h2', 'h3', 'h4'):
+            has_text_prefix = bool(
+                re.match(r'^[一二三四五六七八九十]+、', text)
+                or re.match(r'^（[一二三四五六七八九十]+）', text)
+                or re.match(r'^\d+[.、．]\s*', text)
+                or re.match(r'^（\d+）', text)
+                or re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text)
+            )
+            if not has_text_prefix and len(text) <= 15 and not re.search(r'[。；]', text):
+                level = 'h1'
+        # Word 编号段落中，文本无编号前缀且长度 >25 字的，不算标题
+        if wnl is not None and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
+            has_text_prefix = bool(
+                re.match(r'^[一二三四五六七八九十]+、', text)
+                or re.match(r'^（[一二三四五六七八九十]+）', text)
+                or re.match(r'^\d+[.、．]\s*', text)
+                or re.match(r'^（\d+）', text)
+                or re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text)
+            )
+            if not has_text_prefix and len(text) > 25:
+                return None
+        return level
+
+    for idx, item in enumerate(paragraphs_text):
+        level = _precompute_heading(idx, item)
+        if level and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
+            is_heading_index.add(idx)
 
     for i, item in enumerate(paragraphs_text):
         etype = item[0]
@@ -616,6 +830,17 @@ def format_document(src_path: str, dst_path: str):
 
         text = clean_text(raw)
         if not text:
+            # 空行：如果下一个非空段落是标题，跳过此空行
+            skip_empty = False
+            for j in range(i + 1, len(paragraphs_text)):
+                if paragraphs_text[j][0] == 'p' and paragraphs_text[j][1].strip():
+                    if j in is_heading_index:
+                        skip_empty = True
+                    break
+                if paragraphs_text[j][0] == 'tbl':
+                    break
+            if skip_empty:
+                continue
             p = doc.add_paragraph()
             set_para_spacing(p)
             continue
@@ -630,19 +855,48 @@ def format_document(src_path: str, dst_path: str):
             # 超过2段连续标题则退出标题模式
             if title_count >= 2:
                 title_mode = False
-                title_ended = True
             continue
-
-        # 标题区结束后插入一个空行
-        if title_ended:
-            p = doc.add_paragraph()
-            set_para_spacing(p)
-            title_ended = False
 
         title_mode = False
         level = detect_level(text)
+        # 先应用 Word 编号层级（PENDING → 实际层级）
         if word_num_level is not None:
             level = word_num_level
+        # Word 编号段落中，文本无编号前缀且长度 >25 字的，降级为 body（是正文不是标题）
+        if word_num_level is not None and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
+            has_text_prefix = bool(
+                re.match(r'^[一二三四五六七八九十]+、', text)
+                or re.match(r'^（[一二三四五六七八九十]+）', text)
+                or re.match(r'^\d+[.、．]\s*', text)
+                or re.match(r'^（\d+）', text)
+                or re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text)
+            )
+            if not has_text_prefix and len(text) > 25:
+                level = 'body'
+                word_num_level = None  # 重置，后续不按标题处理
+        # 提升 X. → h1（当文档没有中文一级编号时）
+        # 排除：X.Y 多级编号、X.是/要 等动词前缀、正文长句
+        if promote_x_to_h1 and level == 'h3':
+            is_long_sentence = '。' in text and len(text) > 30
+            if (re.match(r'^\d+[.、．]\s*\S', text)
+                and not re.match(r'^\d+\.\d+', text)
+                and not re.match(r'^\d+[.、．]\s*[是是以要为将把让使被]', text)
+                and not is_long_sentence):
+                level = 'h1'
+        # 提升 promote 模式下夹在编号组之间的无编号短段落为 h1
+        if promote_x_to_h1 and level == 'body' and word_num_level is None and i in promote_body_indices:
+            level = 'h1'
+        # promote 模式下：Word 编号隐藏了编号的短段落（无文本前缀 ≤15字），提升为 h1
+        if promote_x_to_h1 and word_num_level is not None and word_num_level in ('h1', 'h2', 'h3', 'h4'):
+            has_text_prefix = bool(
+                re.match(r'^[一二三四五六七八九十]+、', text)
+                or re.match(r'^（[一二三四五六七八九十]+）', text)
+                or re.match(r'^\d+[.、．]\s*', text)
+                or re.match(r'^（\d+）', text)
+                or re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text)
+            )
+            if not has_text_prefix and len(text) <= 15 and not re.search(r'[。；]', text):
+                level = 'h1'
 
         if level == 'body' and word_num_level is None:
             prev_etype = paragraphs_text[i - 1][0] if i > 0 else None
@@ -676,9 +930,25 @@ def format_document(src_path: str, dst_path: str):
             clean_heading = text[std_prefix_match.end():].lstrip()
 
         if is_multilevel and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
-            # X.Y 多级编号：保留原文编号，不自动重编
+            # X.Y 多级编号：保留原文编号，不自动重编，标黄编号部分
             p = doc.add_paragraph()
             apply_heading_format(p, level, text)
+            if i in subhead_para_indices:
+                # 找到编号部分的结束位置
+                num_m = re.match(r'^(\d+\.\d+[.、．]?)', text)
+                if num_m and p.runs:
+                    # 拆分 run：编号部分标黄 + 其余正常
+                    full_text = p.runs[0].text
+                    num_end = len(num_m.group(1))
+                    p.runs[0].text = ''
+                    run_num = p.add_run(full_text[:num_end])
+                    set_run_font(run_num, p.runs[0].font.name if p.runs else FONT_FANGSONG,
+                                 p.runs[0].font.size if p.runs else SIZE_SANHAO, bold=False)
+                    _add_run_highlight(run_num)
+                    run_rest = p.add_run(full_text[num_end:])
+                    set_run_font(run_rest, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+                    if len(p.runs) > 2:
+                        p.runs[0]._r.getparent().remove(p.runs[0]._r)
         elif is_verb_prefix and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             # X.是/要 等不规范编号：保留原文编号不重编，仅对问题编号部分标黄提醒
             verb_m = re.match(r'^(\d+[.、．])', text)
@@ -692,22 +962,65 @@ def format_document(src_path: str, dst_path: str):
             if prefix_text:
                 run_pre = p.add_run(prefix_text)
                 set_run_font(run_pre, FONT_FANGSONG, SIZE_SANHAO, bold=False)
-                # 仅对编号部分添加黄色高亮（字符级 shd）
-                rPr = run_pre._r.get_or_add_rPr()
-                shd = OxmlElement('w:shd')
-                shd.set(qn('w:val'), 'clear')
-                shd.set(qn('w:color'), 'auto')
-                shd.set(qn('w:fill'), 'FFFF00')
-                rPr.append(shd)
+                _add_run_highlight(run_pre)
             run_rest = p.add_run(rest_text)
             set_run_font(run_rest, FONT_FANGSONG, SIZE_SANHAO, bold=False)
         elif level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             prefix = counter.next(level)
+            display = prefix + clean_heading
             p = doc.add_paragraph()
-            apply_heading_format(p, level, clean_heading, prefix=prefix)
+            cn_font = FONT_HEITI if level == 'h1' else (FONT_KAITI if level == 'h2' else FONT_FANGSONG)
+            if i in punct_para_indices:
+                # 句末标点缺失 + 标题：标黄末尾2个字符
+                apply_heading_format(p, level, '')
+                for r in list(p.runs):
+                    r._r.getparent().remove(r._r)
+                if len(display) >= 2:
+                    run_before = p.add_run(display[:-2])
+                    set_run_font(run_before, cn_font, SIZE_SANHAO, bold=False)
+                    run_hl = p.add_run(display[-2:])
+                    set_run_font(run_hl, cn_font, SIZE_SANHAO, bold=False)
+                    _add_run_highlight(run_hl)
+                else:
+                    run = p.add_run(display)
+                    set_run_font(run, cn_font, SIZE_SANHAO, bold=False)
+                    _add_run_highlight(run)
+            elif i in title_punct_para_indices:
+                # 标题末尾有标点：去掉末尾标点输出，但标黄末尾标点
+                punct_char = display[-1]  # 。或；
+                clean_display = display[:-1]
+                apply_heading_format(p, level, '')
+                for r in list(p.runs):
+                    r._r.getparent().remove(r._r)
+                run_before = p.add_run(clean_display)
+                set_run_font(run_before, cn_font, SIZE_SANHAO, bold=False)
+                run_punct = p.add_run(punct_char)
+                set_run_font(run_punct, cn_font, SIZE_SANHAO, bold=False)
+                _add_run_highlight(run_punct)
+            else:
+                apply_heading_format(p, level, clean_heading, prefix=prefix)
         else:
+            # 正文段落
             p = doc.add_paragraph()
-            apply_heading_format(p, level, text)
+            # 问候语（以：或:结尾且不含句号）不缩进
+            is_greeting = bool(re.match(r'^.{2,10}[：:]$', text.strip()))
+            if i in punct_para_indices:
+                # 句末标点缺失：标黄末尾2个字符
+                apply_heading_format(p, level, '', no_indent=is_greeting)
+                for r in list(p.runs):
+                    r._r.getparent().remove(r._r)
+                if len(text) >= 2:
+                    run_before = p.add_run(text[:-2])
+                    set_run_font(run_before, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+                    run_hl = p.add_run(text[-2:])
+                    set_run_font(run_hl, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+                    _add_run_highlight(run_hl)
+                else:
+                    run = p.add_run(text)
+                    set_run_font(run, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+                    _add_run_highlight(run)
+            else:
+                apply_heading_format(p, level, text, no_indent=is_greeting)
 
     _add_page_number(doc)
     doc.save(dst_path)
