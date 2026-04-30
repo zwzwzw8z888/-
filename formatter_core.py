@@ -120,6 +120,9 @@ def is_main_title(text):
             return False
     if '。' in t or '；' in t:
         return False
+    # 排除问候语（含冒号且含称呼关键词）
+    if re.search(r'[：:]$', t) and re.search(r'领导|同事|各位|尊敬|您好|下午好|上午好|你好', t):
+        return False
     return True
 
 
@@ -153,6 +156,7 @@ def apply_heading_format(para, level, text, prefix='', no_indent=False):
     para.clear()
     para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     set_para_spacing(para)
+    # 全局规则：所有段落（含标题）默认首行缩进2字符，除非明确 no_indent（如问候语）
     if not no_indent:
         set_para_indent(para, 2)
     display = prefix + text
@@ -196,47 +200,119 @@ def _calc_smart_col_widths(rows_data, num_cols):
     return weights
 
 
-def _add_run_highlight(run, color='FFFF00'):
-    """给 run 添加黄色底纹高亮（字符级 shd）"""
-    rPr = run._r.get_or_add_rPr()
-    shd = OxmlElement('w:shd')
-    shd.set(qn('w:val'), 'clear')
-    shd.set(qn('w:color'), 'auto')
-    shd.set(qn('w:fill'), color)
-    rPr.append(shd)
-
-
-def _add_paragraph_with_highlight(para, text, cn_font, size_pt, bold=False,
-                                   highlight_start=None, highlight_end=None,
-                                   highlight_color='FFFF00'):
-    """添加文本，可选对 [highlight_start:highlight_end] 范围标黄。
-    None 表示不标黄；-1 表示标黄末尾2个字符。
+def _apply_comments_to_doc(doc, comment_list):
+    """在文档中统一添加批注。
+    comment_list: [(text_prefix, comment_text), ...]
+    通过文本前缀匹配输出文档中的段落来定位批注位置。
     """
-    if highlight_start is not None and highlight_end is not None:
-        if highlight_end == -1:
-            # 标黄末尾2个字符
-            if len(text) >= 2:
-                highlight_start = len(text) - 2
-                highlight_end = len(text)
-            else:
-                highlight_start = 0
-                highlight_end = len(text)
-        # 前半部分
-        if highlight_start > 0:
-            run_before = para.add_run(text[:highlight_start])
-            set_run_font(run_before, cn_font, size_pt, bold)
-        # 标黄部分
-        run_hl = para.add_run(text[highlight_start:highlight_end])
-        set_run_font(run_hl, cn_font, size_pt, bold)
-        _add_run_highlight(run_hl, highlight_color)
-        # 后半部分
-        if highlight_end < len(text):
-            run_after = para.add_run(text[highlight_end:])
-            set_run_font(run_after, cn_font, size_pt, bold)
-    else:
-        run = para.add_run(text)
-        set_run_font(run, cn_font, size_pt, bold)
-    return para
+    if not comment_list:
+        return
+    import datetime
+    from lxml import etree
+
+    body = doc.element.body
+
+    # 收集所有段落及其文本
+    para_map = []  # [(child_index, para_element, text), ...]
+    child_idx = 0
+    for child in body:
+        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+        if tag == 'p':
+            text = ''.join(t.text for t in child.iter(qn('w:t')) if t.text)
+            para_map.append((child_idx, child, text))
+        child_idx += 1
+
+    # 创建 comments XML
+    comments_xml = (
+        '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '</w:comments>'
+    )
+    comments_element = etree.fromstring(comments_xml.encode('utf-8'))
+    next_id = 0
+    now_str = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
+    author = '格式化审查'
+
+    # 已匹配的段落集合（避免重复匹配）
+    matched_indices = set()
+
+    for text_prefix, comment_text in comment_list:
+        # 在输出段落中找到匹配的段落
+        target_elem = None
+        for ci, pelem, ptext in para_map:
+            if ci in matched_indices:
+                continue
+            if ptext.startswith(text_prefix) or text_prefix in ptext:
+                target_elem = pelem
+                matched_indices.add(ci)
+                break
+        if target_elem is None:
+            continue
+
+        comment_id = str(next_id)
+
+        # 1. 创建 w:comment 元素
+        comment_elem = OxmlElement('w:comment')
+        comment_elem.set(qn('w:id'), comment_id)
+        comment_elem.set(qn('w:author'), author)
+        comment_elem.set(qn('w:date'), now_str)
+        comment_elem.set(qn('w:initials'), 'GS')
+
+        p_comment = OxmlElement('w:p')
+        r_comment = OxmlElement('w:r')
+        t_comment = OxmlElement('w:t')
+        t_comment.text = comment_text
+        t_comment.set(qn('xml:space'), 'preserve')
+        r_comment.append(t_comment)
+        p_comment.append(r_comment)
+        comment_elem.append(p_comment)
+        comments_element.append(comment_elem)
+
+        # 2. 在段落开头插入 commentRangeStart
+        cs = OxmlElement('w:commentRangeStart')
+        cs.set(qn('w:id'), comment_id)
+        target_elem.insert(0, cs)
+
+        # 3. 在段落末尾插入 commentRangeEnd + commentReference
+        ce = OxmlElement('w:commentRangeEnd')
+        ce.set(qn('w:id'), comment_id)
+        target_elem.append(ce)
+
+        ref_run = OxmlElement('w:r')
+        ref_rPr = OxmlElement('w:rPr')
+        ref_rStyle = OxmlElement('w:rStyle')
+        ref_rStyle.set(qn('w:val'), 'CommentReference')
+        ref_rPr.append(ref_rStyle)
+        ref_run.append(ref_rPr)
+        ref_cr = OxmlElement('w:commentReference')
+        ref_cr.set(qn('w:id'), comment_id)
+        ref_run.append(ref_cr)
+        target_elem.append(ref_run)
+
+        next_id += 1
+
+    # 将 comments 保存为 Part
+    comments_bytes = etree.tostring(comments_element, xml_declaration=True, encoding='UTF-8', standalone=True)
+    doc_part = doc.part
+
+    # 尝试获取已有的 comments part
+    for rel in doc_part.rels.values():
+        if 'comments' in rel.reltype:
+            comments_part = rel.target_part
+            comments_part._blob = comments_bytes
+            return
+
+    # 创建新的 Part（使用正确的 PackURI）
+    from docx.opc.part import Part
+    from docx.opc.packuri import PackURI
+    comments_partname = PackURI('/word/comments.xml')
+    comments_part = Part(
+        partname=comments_partname,
+        content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml',
+        blob=comments_bytes,
+        package=doc_part.package
+    )
+    doc_part.relate_to(comments_part, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments')
 
 
 def _add_page_number(doc):
@@ -593,6 +669,7 @@ def format_document(src_path: str, dst_path: str):
 
     # 新建文档
     doc = Document()
+    comment_list = []  # 收集批注: [(匹配文本前缀, comment_text), ...]
     section = doc.sections[0]
     section.page_width  = Cm(21)
     section.page_height = Cm(29.7)
@@ -852,9 +929,12 @@ def format_document(src_path: str, dst_path: str):
             set_para_spacing(p)
             run = p.add_run(text)
             set_run_font(run, FONT_XIAOBIAOSONG, SIZE_ERHAO, bold=False)
-            # 超过2段连续标题则退出标题模式
+            # 超过2段连续标题则退出标题模式并插入空行
             if title_count >= 2:
                 title_mode = False
+                title_ended = True
+                blank = doc.add_paragraph()
+                set_para_spacing(blank)
             continue
 
         title_mode = False
@@ -901,15 +981,18 @@ def format_document(src_path: str, dst_path: str):
         if level == 'body' and word_num_level is None:
             prev_etype = paragraphs_text[i - 1][0] if i > 0 else None
             is_after_table = (prev_etype == 'tbl')
+            # 表格标题（表1、表2…、表3-1…）不算标题
+            is_table_title = bool(re.match(r'^表\s*\d+', text))
             is_short_title = (
                 len(text) <= 25
                 and not re.search(r'[。；]', text)
                 and not text.startswith('附件')
                 and not re.match(r'^[\d,.\-+%：:（]+', text)
+                and not is_table_title
             )
             if is_bold and is_short_title:
                 level = 'h1'
-            elif is_after_table and is_short_title and len(text) <= 20:
+            elif is_after_table and is_short_title and len(text) <= 20 and not is_table_title:
                 level = 'h1'
 
         clean_heading = text
@@ -930,97 +1013,48 @@ def format_document(src_path: str, dst_path: str):
             clean_heading = text[std_prefix_match.end():].lstrip()
 
         if is_multilevel and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
-            # X.Y 多级编号：保留原文编号，不自动重编，标黄编号部分
+            # X.Y 多级编号：保留原文编号，不自动重编，添加批注提醒
             p = doc.add_paragraph()
             apply_heading_format(p, level, text)
             if i in subhead_para_indices:
-                # 找到编号部分的结束位置
                 num_m = re.match(r'^(\d+\.\d+[.、．]?)', text)
-                if num_m and p.runs:
-                    # 拆分 run：编号部分标黄 + 其余正常
-                    full_text = p.runs[0].text
-                    num_end = len(num_m.group(1))
-                    p.runs[0].text = ''
-                    run_num = p.add_run(full_text[:num_end])
-                    set_run_font(run_num, p.runs[0].font.name if p.runs else FONT_FANGSONG,
-                                 p.runs[0].font.size if p.runs else SIZE_SANHAO, bold=False)
-                    _add_run_highlight(run_num)
-                    run_rest = p.add_run(full_text[num_end:])
-                    set_run_font(run_rest, FONT_FANGSONG, SIZE_SANHAO, bold=False)
-                    if len(p.runs) > 2:
-                        p.runs[0]._r.getparent().remove(p.runs[0]._r)
+                num_str = num_m.group(1) if num_m else ''
+                comment_list.append((text[:20],
+                    f'此处使用"{num_str}"多级编号，建议改为四级标题①②③格式'))
         elif is_verb_prefix and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
-            # X.是/要 等不规范编号：保留原文编号不重编，仅对问题编号部分标黄提醒
+            # X.是/要 等不规范编号：保留原文编号不重编，添加批注提醒
             verb_m = re.match(r'^(\d+[.、．])', text)
             prefix_text = verb_m.group(1) if verb_m else ''
-            rest_text = text[verb_m.end():] if verb_m else text
             p = doc.add_paragraph()
-            apply_heading_format(p, 'body', '')
-            # 清空默认run，手动拆分为两个run
-            for r in list(p.runs):
-                r._r.getparent().remove(r._r)
-            if prefix_text:
-                run_pre = p.add_run(prefix_text)
-                set_run_font(run_pre, FONT_FANGSONG, SIZE_SANHAO, bold=False)
-                _add_run_highlight(run_pre)
-            run_rest = p.add_run(rest_text)
-            set_run_font(run_rest, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+            apply_heading_format(p, 'body', text)
+            if i in h3_para_indices:
+                comment_list.append((text[:20],
+                    f'编号"{prefix_text}"后直接跟动词，建议改为"一是…""二是…"格式'))
         elif level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             prefix = counter.next(level)
             display = prefix + clean_heading
             p = doc.add_paragraph()
-            cn_font = FONT_HEITI if level == 'h1' else (FONT_KAITI if level == 'h2' else FONT_FANGSONG)
+            apply_heading_format(p, level, display)
             if i in punct_para_indices:
-                # 句末标点缺失 + 标题：标黄末尾2个字符
-                apply_heading_format(p, level, '')
-                for r in list(p.runs):
-                    r._r.getparent().remove(r._r)
-                if len(display) >= 2:
-                    run_before = p.add_run(display[:-2])
-                    set_run_font(run_before, cn_font, SIZE_SANHAO, bold=False)
-                    run_hl = p.add_run(display[-2:])
-                    set_run_font(run_hl, cn_font, SIZE_SANHAO, bold=False)
-                    _add_run_highlight(run_hl)
-                else:
-                    run = p.add_run(display)
-                    set_run_font(run, cn_font, SIZE_SANHAO, bold=False)
-                    _add_run_highlight(run)
+                comment_list.append((display[:20],
+                    '此标题/段落可能缺少句末标点，请人工确认'))
             elif i in title_punct_para_indices:
-                # 标题末尾有标点：去掉末尾标点输出，但标黄末尾标点
-                punct_char = display[-1]  # 。或；
-                clean_display = display[:-1]
-                apply_heading_format(p, level, '')
-                for r in list(p.runs):
-                    r._r.getparent().remove(r._r)
-                run_before = p.add_run(clean_display)
-                set_run_font(run_before, cn_font, SIZE_SANHAO, bold=False)
-                run_punct = p.add_run(punct_char)
-                set_run_font(run_punct, cn_font, SIZE_SANHAO, bold=False)
-                _add_run_highlight(run_punct)
-            else:
-                apply_heading_format(p, level, clean_heading, prefix=prefix)
+                comment_list.append((display[:20],
+                    '标题末尾不应有标点符号'))
         else:
             # 正文段落
             p = doc.add_paragraph()
-            # 问候语（以：或:结尾且不含句号）不缩进
-            is_greeting = bool(re.match(r'^.{2,10}[：:]$', text.strip()))
+            # 问候语（含称呼关键词+以：结尾）不缩进
+            greeting_kw = '领导|同事|各位|尊敬|您好|下午好|上午好|你好'
+            is_greeting = bool(re.match(r'^.{2,30}[：:]$', text.strip())
+                              and re.search(greeting_kw, text.strip()))
+            apply_heading_format(p, level, text, no_indent=is_greeting)
             if i in punct_para_indices:
-                # 句末标点缺失：标黄末尾2个字符
-                apply_heading_format(p, level, '', no_indent=is_greeting)
-                for r in list(p.runs):
-                    r._r.getparent().remove(r._r)
-                if len(text) >= 2:
-                    run_before = p.add_run(text[:-2])
-                    set_run_font(run_before, FONT_FANGSONG, SIZE_SANHAO, bold=False)
-                    run_hl = p.add_run(text[-2:])
-                    set_run_font(run_hl, FONT_FANGSONG, SIZE_SANHAO, bold=False)
-                    _add_run_highlight(run_hl)
-                else:
-                    run = p.add_run(text)
-                    set_run_font(run, FONT_FANGSONG, SIZE_SANHAO, bold=False)
-                    _add_run_highlight(run)
-            else:
-                apply_heading_format(p, level, text, no_indent=is_greeting)
+                comment_list.append((text[:20],
+                    '此段落可能缺少句末标点，请人工确认'))
+
+    # 统一添加批注
+    _apply_comments_to_doc(doc, comment_list)
 
     _add_page_number(doc)
     doc.save(dst_path)
