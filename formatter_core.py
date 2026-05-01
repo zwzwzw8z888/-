@@ -35,6 +35,7 @@ MARGIN_RIGHT  = Cm(2.6)
 
 CN_NUMBERS = ['一','二','三','四','五','六','七','八','九','十',
               '十一','十二','十三','十四','十五','十六','十七','十八','十九','二十']
+CNUM = {str(i+1): s for i, s in enumerate(CN_NUMBERS)}
 CIRCLE_NUMBERS = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩',
                   '⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳']
 
@@ -108,6 +109,9 @@ def is_main_title(text):
     # 排除时间行（如 "2026年4月"、"2026年4月28日"）
     if re.match(r'^\d{4}年\d{1,2}月\d{0,2}日?\s*$', t):
         return False
+    # 排除"月底"数据行（如 "4月底节点：差异≤40%..."）
+    if re.search(r'月底', t):
+        return False
     for pat in [
         r'^[一二三四五六七八九十]+、',
         r'^（[一二三四五六七八九十]+）',
@@ -159,19 +163,26 @@ def apply_heading_format(para, level, text, prefix='', no_indent=False, preserve
     para.clear()
     para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     set_para_spacing(para)
-    # 全局规则：所有段落（含标题）默认首行缩进2字符，除非明确 no_indent（如问候语）
+    # 全局规则：所有段落（含标题）默认首行缩进2字符，除非明确 no_indent（如问候语/主标题）
     if not no_indent:
         set_para_indent(para, 2)
     display = prefix + text
     font_map = {
         'h1': FONT_HEITI,
         'h2': FONT_KAITI,
+        'title': FONT_XIAOBIAOSONG,  # 主标题：方正小标宋简体
     }
     cn_font = font_map.get(level, FONT_FANGSONG)
+    
     run = para.add_run(display)
-    # 如果原文是加粗的，保留加粗样式（除非明确不保留）
-    is_bold = preserve_bold
-    set_run_font(run, cn_font, SIZE_SANHAO, bold=is_bold)
+    
+    # 主标题特殊处理：居中、二号字体、无首行缩进
+    if level == 'title':
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        para.paragraph_format.first_line_indent = None
+        set_run_font(run, cn_font, SIZE_ERHAO, bold=False)
+    else:
+        set_run_font(run, cn_font, SIZE_SANHAO, bold=preserve_bold)
 
 
 def _calc_smart_col_widths(rows_data, num_cols):
@@ -243,11 +254,12 @@ def _apply_comments_to_doc(doc, comment_list):
 
     for text_prefix, comment_text in comment_list:
         # 在输出段落中找到匹配的段落
+        # 优先精确匹配段首前缀，避免误匹配（如正文中的"1."被误判给列表项）
         target_elem = None
         for ci, pelem, ptext in para_map:
             if ci in matched_indices:
                 continue
-            if ptext.startswith(text_prefix) or text_prefix in ptext:
+            if ptext.startswith(text_prefix):
                 target_elem = pelem
                 matched_indices.add(ci)
                 break
@@ -273,26 +285,112 @@ def _apply_comments_to_doc(doc, comment_list):
         comment_elem.append(p_comment)
         comments_element.append(comment_elem)
 
-        # 2. 在段落开头插入 commentRangeStart
-        cs = OxmlElement('w:commentRangeStart')
-        cs.set(qn('w:id'), comment_id)
-        target_elem.insert(0, cs)
-
-        # 3. 在段落末尾插入 commentRangeEnd + commentReference
-        ce = OxmlElement('w:commentRangeEnd')
-        ce.set(qn('w:id'), comment_id)
-        target_elem.append(ce)
-
-        ref_run = OxmlElement('w:r')
-        ref_rPr = OxmlElement('w:rPr')
-        ref_rStyle = OxmlElement('w:rStyle')
-        ref_rStyle.set(qn('w:val'), 'CommentReference')
-        ref_rPr.append(ref_rStyle)
-        ref_run.append(ref_rPr)
-        ref_cr = OxmlElement('w:commentReference')
-        ref_cr.set(qn('w:id'), comment_id)
-        ref_run.append(ref_cr)
-        target_elem.append(ref_run)
+        # 2. 只批注段落开头的编号部分（精确到字符级别）
+        # 找到段落中的所有run
+        runs = target_elem.findall(qn('w:r'))
+        if runs:
+            # 找到第一个包含文本的run
+            first_run = runs[0]
+            first_run_text = ''.join(t.text or '' for t in first_run.iter(qn('w:t')))
+            
+            # 检查第一个run是否包含编号（数字开头）
+            import re
+            num_match = re.match(r'^(\d+\.\s*)', first_run_text)
+            
+            if num_match and len(num_match.group(1)) < len(first_run_text):
+                # 编号和正文在同一个run中，需要拆分
+                num_part = num_match.group(1)  # 如 "3. "
+                rest_part = first_run_text[len(num_part):]  # 剩余文本
+                
+                # 获取run的rPr（如果有）
+                rPr = first_run.find(qn('w:rPr'))
+                
+                # 创建两个新run：编号run和正文run
+                num_run = OxmlElement('w:r')
+                if rPr is not None:
+                    num_run.append(rPr.__copy__())
+                num_t = OxmlElement('w:t')
+                num_t.text = num_part
+                num_t.set(qn('xml:space'), 'preserve')
+                num_run.append(num_t)
+                
+                rest_run = OxmlElement('w:r')
+                if rPr is not None:
+                    rest_run.append(rPr.__copy__())
+                rest_t = OxmlElement('w:t')
+                rest_t.text = rest_part
+                rest_t.set(qn('xml:space'), 'preserve')
+                rest_run.append(rest_t)
+                
+                # 替换原来的run
+                run_idx = list(target_elem).index(first_run)
+                target_elem.remove(first_run)
+                target_elem.insert(run_idx, num_run)
+                target_elem.insert(run_idx + 1, rest_run)
+                
+                # 现在批注只包裹编号run
+                cs = OxmlElement('w:commentRangeStart')
+                cs.set(qn('w:id'), comment_id)
+                target_elem.insert(run_idx, cs)
+                
+                ce = OxmlElement('w:commentRangeEnd')
+                ce.set(qn('w:id'), comment_id)
+                target_elem.insert(run_idx + 2, ce)
+                
+                ref_run = OxmlElement('w:r')
+                ref_rPr = OxmlElement('w:rPr')
+                ref_rStyle = OxmlElement('w:rStyle')
+                ref_rStyle.set(qn('w:val'), 'CommentReference')
+                ref_rPr.append(ref_rStyle)
+                ref_run.append(ref_rPr)
+                ref_cr = OxmlElement('w:commentReference')
+                ref_cr.set(qn('w:id'), comment_id)
+                ref_run.append(ref_cr)
+                target_elem.insert(run_idx + 3, ref_run)
+            else:
+                # 编号在独立run中（通常不会有这种情况），批注第一个run
+                pPr = target_elem.find(qn('w:pPr'))
+                if pPr is not None:
+                    insert_idx = list(target_elem).index(pPr) + 1
+                else:
+                    insert_idx = 0
+                
+                cs = OxmlElement('w:commentRangeStart')
+                cs.set(qn('w:id'), comment_id)
+                target_elem.insert(insert_idx, cs)
+                
+                ce = OxmlElement('w:commentRangeEnd')
+                ce.set(qn('w:id'), comment_id)
+                target_elem.insert(insert_idx + 1, ce)
+                
+                ref_run = OxmlElement('w:r')
+                ref_rPr = OxmlElement('w:rPr')
+                ref_rStyle = OxmlElement('w:rStyle')
+                ref_rStyle.set(qn('w:val'), 'CommentReference')
+                ref_rPr.append(ref_rStyle)
+                ref_run.append(ref_rPr)
+                ref_cr = OxmlElement('w:commentReference')
+                ref_cr.set(qn('w:id'), comment_id)
+                ref_run.append(ref_cr)
+                target_elem.insert(insert_idx + 2, ref_run)
+        else:
+            # 没有run时，退化为批注整段
+            cs = OxmlElement('w:commentRangeStart')
+            cs.set(qn('w:id'), comment_id)
+            ce = OxmlElement('w:commentRangeEnd')
+            ce.set(qn('w:id'), comment_id)
+            ref_run = OxmlElement('w:r')
+            ref_rPr = OxmlElement('w:rPr')
+            ref_rStyle = OxmlElement('w:rStyle')
+            ref_rStyle.set(qn('w:val'), 'CommentReference')
+            ref_rPr.append(ref_rStyle)
+            ref_run.append(ref_rPr)
+            ref_cr = OxmlElement('w:commentReference')
+            ref_cr.set(qn('w:id'), comment_id)
+            ref_run.append(ref_cr)
+            target_elem.insert(0, cs)
+            target_elem.append(ce)
+            target_elem.append(ref_run)
 
         next_id += 1
 
@@ -437,6 +535,10 @@ def _check_subheading_issues(paragraphs_text):
             major = int(m.group(1))
             minor = int(m.group(2))
             content = m.group(3)
+            # 排除时间数字（如 "1.2025年" 中的 2025 是年份，不是多级编号）
+            # 更精确的判断：minor是年份(2000-2030)且content以"年"开头，才是时间数字
+            if 2000 <= minor <= 2030 and content.startswith('年'):
+                continue
             if minor > 0:
                 issues.append((i, text[:60], major, minor, content))
     return issues
@@ -543,10 +645,10 @@ def format_document(src_path: str, dst_path: str):
                     paragraphs_text.append(('tbl', rows_data))
 
         # ──── 预合并：合并被Word拆分的标题碎片 ────
-        # 检测条件：短段落(≤15字)+无标点+无编号前缀，前一个是主标题或同样短
-        i = 0
-        merged = [False] * len(paragraphs_text)  # False=未合并，True=已合并到前一个，跳过
-        while i < len(paragraphs_text):
+        # 临时禁用：此逻辑导致标题段落被错误合并，编号错乱
+        # 直接跳过预合并，使用原始段落列表
+        pass  # 下面的while循环已被禁用
+        while False and i < len(paragraphs_text):
             if merged[i]:
                 i += 1
                 continue
@@ -555,14 +657,17 @@ def format_document(src_path: str, dst_path: str):
                 i += 1
                 continue
             text = item[1]
-            # 碎片判断：短文本+无句内标点+无编号前缀+非纯数字+非问候语+不以逗号/顿号结尾（句子分隔非标题续行）
+            # 碎片判断：短文本+无句内标点+无编号前缀+非纯数字+非问候语+不以逗号/顿号/冒号结尾
+            # 重要：标题末尾的冒号不应被合并（如"（一）项目上线与业财集成："）
             greeting_kw = '领导|同事|各位|尊敬|您好|下午好|上午好|你好'
             is_greeting_text = (
                 re.match(r'^.{2,30}[：:]$', text.strip())
                 and re.search(greeting_kw, text.strip())
             )
-            # 排除以逗号/顿号结尾的碎片（这是句子中间的分隔，不是标题续行）
-            ends_with_sep = bool(re.search(r'[，、]\s*$', text))
+            # 排除以逗号/顿号/冒号结尾的碎片
+            # - 逗号/顿号结尾：句子中间的分隔，不是标题续行
+            # - 冒号结尾：标题（如"（一）xxx："），不是正文碎片
+            ends_with_sep = bool(re.search(r'[，、：:]\s*$', text))
             is_fragment = (
                 1 < len(text) <= 25
                 and not re.search(r'[。；！？]', text)
@@ -582,14 +687,42 @@ def format_document(src_path: str, dst_path: str):
                     i += 1
                     continue
                 # 前段也是短碎片（≤25字）且不以标点结尾 → 合并
-                # 但如果前段是加粗的主标题（prev[2]=True），或前段明显较长（>20字），不合并
+                # 但如果前段明显较长（>20字），不合并
                 prev_is_fragment = (prev[0] == 'p' and 1 < len(prev_text) <= 25
                                     and not re.search(r'[。；！？]', prev_text))
-                # 新增保护：如果前段是加粗的主标题（bold=True）或明显较长（>20字），不合并
-                # 这防止"新开项目上线..."等标题被错误合并到主标题后面
-                prev_is_bold_main_title = (prev[0] == 'p' and prev[2] is True and len(prev_text) > 10)
+                # 保护：如果前段明显较长（>20字），不合并
                 prev_is_long_fragment = (prev[0] == 'p' and len(prev_text) > 20)
-                if prev_is_fragment and not prev_is_bold_main_title and not prev_is_long_fragment:
+                # 临时修复：禁用merge_to_main_title，防止标题段落被错误合并
+                merge_to_main_title = False
+                # 原代码（暂时禁用）：
+                # prev_is_bold_main = (prev[0] == 'p' and prev[2] is True)
+                # prev_is_main = (prev[0] == 'p' and is_main_title(prev_text))
+                # merge_to_main_title = (prev_is_bold_main or prev_is_main) and len(text) <= 15
+                # 禁止合并：当前段或前段看起来像独立条目（含冒号的数据行、月底节点等）
+                # 关键修复：禁止合并包含编号前缀的段落（如"1." "2." "（一）"等）
+                has_num_prefix_current = bool(
+                    re.match(r'^[一二三四五六七八九十]+、', text)
+                    or re.match(r'^（[一二三四五六七八九十]+）', text)
+                    or re.match(r'^\d+[.、．]\s*', text)
+                    or re.match(r'^（\d+）', text)
+                    or re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text)
+                )
+                has_num_prefix_prev = bool(
+                    re.match(r'^[一二三四五六七八九十]+、', prev_text)
+                    or re.match(r'^（[一二三四五六七八九十]+）', prev_text)
+                    or re.match(r'^\d+[.、．]\s*', prev_text)
+                    or re.match(r'^（\d+）', prev_text)
+                    or re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', prev_text)
+                )
+                looks_like_list_item = (
+                    bool(re.search(r'[：:]', text))
+                    or bool(re.search(r'[：:]', prev_text))
+                    or has_num_prefix_current
+                    or has_num_prefix_prev
+                )
+                # 调试输出
+                print(f'[DEBUG-MERGE] i={i}, text="{text[:30]}", is_fragment={is_fragment}, prev_is_fragment={prev_is_fragment}, merge_to_main_title={merge_to_main_title}, looks_like_list_item={looks_like_list_item}, has_num_prefix_current={has_num_prefix_current}')
+                if (prev_is_fragment and not prev_is_long_fragment and not looks_like_list_item) or merge_to_main_title:
                     # 合并到前一段
                     merged_text = prev_text + text
                     paragraphs_text[i - 1] = (prev[0], merged_text, prev[2], prev[3], prev[4], prev[5])
@@ -597,6 +730,8 @@ def format_document(src_path: str, dst_path: str):
                     i += 1
                     continue
             i += 1
+        # 预合并已被禁用，直接设置merged为全False
+        merged = [False] * len(paragraphs_text)
         # 过滤掉已合并的碎片
         paragraphs_text = [item for i, item in enumerate(paragraphs_text) if not merged[i]]
 
@@ -621,6 +756,9 @@ def format_document(src_path: str, dst_path: str):
             continue
         levels = abstract_num_defs.get(an_id, {})
         for ilvl, (fmt, txt) in levels.items():
+            # decimal 格式（1. 2. 3.）通常是正文编号列表，不应映射为标题层级
+            if fmt == 'decimal':
+                continue
             if fmt in ('chineseCounting', 'chineseCountingThousand',
                        'upperLetter', 'lowerLetter',
                        'ideographDigital', 'ideographEnclosedCircle'):
@@ -638,7 +776,19 @@ def format_document(src_path: str, dst_path: str):
                     numid_ilvl_level_map[(nid, ilvl)] = mapping[ilvl]
 
     if not numid_ilvl_level_map:
+        # 仅当 numId 对应的格式不是 decimal 时才创建回退映射
+        # decimal 格式的编号列表通常是正文，不应映射为标题
         for order, nid in enumerate(sorted_num_ids):
+            # 检查该 numId 对应的格式是否为 decimal
+            an_id = num_to_abstract.get(nid)
+            is_decimal_only = False
+            if an_id:
+                levels = abstract_num_defs.get(an_id, {})
+                fmts = [fmt for fmt, _ in levels.values()]
+                if fmts and all(f == 'decimal' for f in fmts):
+                    is_decimal_only = True
+            if is_decimal_only:
+                continue  # decimal 格式不映射为标题
             level_map = {0: 'h1', 1: 'h2', 2: 'h3'}
             if order in level_map:
                 numid_ilvl_level_map[(nid, '0')] = level_map[order]
@@ -699,6 +849,8 @@ def format_document(src_path: str, dst_path: str):
         })
 
     # ──── 标题句末标点检测 ────
+    # 规则：只有真正的多级标题（一、二、三、及其子标题）末尾有标点才需要提示
+    # 正文编号列表（如"1. xxx 2. xxx"）和Word原生编号段落不算标题
     title_punct_issues = []
     for idx, item in enumerate(paragraphs_text):
         if item[0] != 'p':
@@ -719,16 +871,31 @@ def format_document(src_path: str, dst_path: str):
         )
         if not has_text_prefix:
             continue
-        # Word编号但无文本前缀的长段落不算标题
+        # Word编号段落（有wnl）通常不是真正的多级标题（而是正文列表）
+        # 排除：1) 有Word原生编号的段落，2) 无文本前缀的长段落
         is_word_num_body = (wnl is not None and not has_text_prefix and len(text) > 25)
         if is_word_num_body:
             continue
-        # 有编号前缀但内容超长（>30字且有句号）的是正文不是标题
-        if len(text) > 30 and '。' in text:
+        # 有编号前缀但内容超长（>30字且有句号或分号）的是正文不是标题
+        if len(text) > 30 and ('。' in text or '；' in text):
             continue
-        # 标题应以非句号结尾，如果以句号结尾则标记
-        if text.rstrip()[-1] in ('。', '；', '，'):
-            title_punct_issues.append((idx, text, text.rstrip()[-1]))
+        # 关键排除：Word原生十进制编号的正文列表（如"需协同解决的事项"下的1. 2.）
+        # 这些段落有numId且对应decimal格式，是正文编号列表，不是标题
+        orig_num_id = item[4] if len(item) > 4 else None
+        if orig_num_id and orig_num_id != '0':
+            # 检查是否是对应decimal格式的编号列表
+            an_id = num_to_abstract.get(orig_num_id)
+            if an_id:
+                levels = abstract_num_defs.get(an_id, {})
+                nilvl = item[5] if len(item) > 5 else '0'
+                fmt, _ = levels.get(nilvl, (None, None))
+                # decimal格式的Word原生编号通常是正文列表，排除
+                if fmt == 'decimal':
+                    continue
+        # 标题应以非句号结尾，如果以句号、分号、逗号、冒号结尾则标记
+        last_char = text.rstrip()[-1]
+        if last_char in ('。', '；', '，', '：', ':'):
+            title_punct_issues.append((idx, text, last_char))
 
     # 建立审查高亮标记集合
     punct_para_indices = {idx for idx, _ in punct_issues}          # 句末标点缺失
@@ -841,6 +1008,7 @@ def format_document(src_path: str, dst_path: str):
     title_count = 0  # 连续标题段计数，防止将正文标题误判为主标题
     title_ended = False  # 标记标题区是否已结束
     counter = HeadingCounter()
+    merged_titles = set()  # 已合并到主标题的段落索引集合
 
     # 预计算：标记哪些段落索引最终是标题（用于空行过滤）
     is_heading_index = set()
@@ -894,7 +1062,7 @@ def format_document(src_path: str, dst_path: str):
 
     for idx, item in enumerate(paragraphs_text):
         level = _precompute_heading(idx, item)
-        if level and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
+        if level and level in ('title', 'h1', 'h2', 'h3', 'h4', 'h5'):
             is_heading_index.add(idx)
 
     # ──── 计算正文编号列表的序号（用于保留Word原生十进制编号） ────
@@ -914,7 +1082,70 @@ def format_document(src_path: str, dst_path: str):
             # 记录当前段落在序列中的位置
             num_seq[pi] = num_seq_count[key]
 
+    # ─── 检查正文编号序号是否合理 ───
+    # 规则：同一(numId, ilvl)组内，相邻两段之间如果隔了一个 h1 标题，
+    # 说明序号跨大节连续，可能不正确，加入批注警告
+    # 注意：h1 标题可能是：
+    #  1) 文本前缀"一、二、三、"（如手工录入的文档）
+    #  2) Word原生编号(numId=1)的段落（如本模板文档）
+    # 两种情况都要检测
+    discontinuous_seq_warnings = {}
+    # 建立每个(numId, ilvl)组的段落索引列表
+    num_group_indices = {}
+    for pi, pitem in enumerate(paragraphs_text):
+        if pitem[0] != 'p':
+            continue
+        orig_num_id = pitem[4] if len(pitem) > 4 else None
+        orig_num_ilvl = pitem[5] if len(pitem) > 5 else None
+        if not orig_num_id or orig_num_id == '0':
+            continue
+        key = (orig_num_id, orig_num_ilvl)
+        if key not in num_group_indices:
+            num_group_indices[key] = []
+        num_group_indices[key].append(pi)
+    # 检查：同一组内，相邻两段之间是否有 h1 标题
+    for key, indices in num_group_indices.items():
+        for j in range(1, len(indices)):
+            prev_idx = indices[j - 1]
+            curr_idx = indices[j]
+            # 检查 prev_idx 和 curr_idx 之间是否有 h1 标题
+            has_h1_between = False
+            for k in range(prev_idx + 1, curr_idx):
+                if k < len(paragraphs_text) and paragraphs_text[k][0] == 'p':
+                    t = paragraphs_text[k][1].strip() if len(paragraphs_text[k]) > 1 else ''
+                    # 情况1：文本前缀中文编号（一、二、三、）
+                    if re.match(r'^[一二三四五六七八九十]+、', t):
+                        has_h1_between = True
+                        break
+                    # 情况2：Word原生编号 numId=1 的段落（h1标题段落）
+                    h1_num_id = paragraphs_text[k][4] if len(paragraphs_text[k]) > 4 else None
+                    if h1_num_id == '1':
+                        has_h1_between = True
+                        break
+            if has_h1_between:
+                prev_seq = num_seq.get(prev_idx)
+                curr_seq = num_seq.get(curr_idx)
+                if prev_seq is not None and curr_seq is not None and curr_idx in is_heading_index:
+                    # 只有当前段落是标题时才触发序号不连续警告
+                    # 正文列表（如"需协同解决的事项"下的1. 2.）不触发此警告
+                    discontinuous_seq_warnings[curr_idx] = (
+                        f'序号 {curr_seq}. 与前一项（序号 {prev_seq}.）'
+                        f'之间隔有大节标题，序号可能不连续，建议确认原文'
+                    )
+
+    # 调试：打印paragraphs_text的关键段落
+    print('[DEBUG] paragraphs_text[7:14]:')
+    for idx in range(7, min(14, len(paragraphs_text))):
+        item = paragraphs_text[idx]
+        if item[0] == 'p':
+            num_id_str = item[4] if len(item) > 4 else 'N/A'
+            print(f'  i={idx}, text="{item[1][:40]}", word_num_level={item[3]}, numId={num_id_str}')
+
     for i, item in enumerate(paragraphs_text):
+        # 跳过已合并到主标题的段落
+        if i in merged_titles:
+            continue
+        
         etype = item[0]
         if etype == 'tbl':
             title_mode = False
@@ -1023,11 +1254,36 @@ def format_document(src_path: str, dst_path: str):
 
         if title_mode and is_main_title(text):
             title_count += 1
+            
+            # 收集连续的主标题段落，合并为完整标题
+            main_title_parts = [text]
+            j = i + 1
+            while j < len(paragraphs_text) and paragraphs_text[j][0] == 'p':
+                next_text = clean_text(paragraphs_text[j][1])
+                if next_text and is_main_title(next_text):
+                    # 检查是否紧跟其后（中间无空行或其他内容）
+                    if not any(clean_text(paragraphs_text[k][1]) for k in range(i+1, j)):
+                        main_title_parts.append(next_text)
+                        j += 1
+                    else:
+                        break
+                else:
+                    break
+            
+            # 合并所有主标题部分（用换行符分隔）
+            combined_title = '\n'.join(main_title_parts)
+            
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             set_para_spacing(p)
-            run = p.add_run(text)
+            run = p.add_run(combined_title)
             set_run_font(run, FONT_XIAOBIAOSONG, SIZE_ERHAO, bold=False)
+            
+            # 跳过已合并的主标题段落（通过continue外部for循环的逻辑）
+            # 记录需要跳过的起始索引，外部循环会处理
+            for skip_i in range(i + 1, j):
+                merged_titles.add(skip_i)
+            
             # 主标题后始终插入空行（与正文区隔）
             title_mode = False
             blank = doc.add_paragraph()
@@ -1036,6 +1292,9 @@ def format_document(src_path: str, dst_path: str):
 
         title_mode = False
         level = detect_level(text)
+        # 调试：查看关键段落的detect_level结果
+        if i >= 9 and i <= 13:
+            print(f'[DEBUG-LEVEL] i={i}, level={level}, text="{text[:50]}"')
         # 先应用 Word 编号层级（PENDING → 实际层级）
         if word_num_level is not None:
             level = word_num_level
@@ -1077,9 +1336,10 @@ def format_document(src_path: str, dst_path: str):
 
         if level == 'body' and word_num_level is None:
             prev_etype = paragraphs_text[i - 1][0] if i > 0 else None
+            prev_info = paragraphs_text[i - 1] if i > 0 else None
             is_after_table = (prev_etype == 'tbl')
             # 检查前一段是否是加粗（主标题）
-            prev_is_bold = (prev[0] == 'p' and len(prev) > 2 and prev[2] is True) if prev_etype == 'p' else False
+            prev_is_bold = (prev_info[0] == 'p' and len(prev_info) > 2 and prev_info[2] is True) if prev_etype == 'p' and prev_info else False
             # 表格标题（表1、表2…、表3-1…）不算标题
             is_table_title = bool(re.match(r'^表\s*\d+', text))
             is_short_title = (
@@ -1123,8 +1383,10 @@ def format_document(src_path: str, dst_path: str):
             or re.match(r'^\d+[.、．]\s*', text)
             or re.match(r'^（\d+）', text)
         )
-        # 短标题（≤25字）+ 有编号前缀 → 保留加粗；长段落不加粗
-        preserve_bold = is_bold and has_num_prefix and len(text) <= 25
+        # 短标题（≤25字）+ 有编号前缀 → 保留加粗
+        # 对于有编号前缀的段落，即使较长(>25字)但含冒号/"层面"等结构词，也应保留加粗（如"2.流程与管理层面：..."）
+        has_struct_marker = bool(re.search(r'[：:]', text)) or bool(re.search(r'层面|板块|线条', text))
+        preserve_bold = is_bold and has_num_prefix and (len(text) <= 25 or has_struct_marker)
 
         if is_multilevel and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             # X.Y 多级编号：保留原文编号，不自动重编，添加批注提醒
@@ -1144,9 +1406,30 @@ def format_document(src_path: str, dst_path: str):
             if i in h3_para_indices:
                 comment_list.append((text[:20],
                     f'编号"{prefix_text}"后直接跟动词，建议改为"一是…""二是…"格式'))
-        elif level in ('h1', 'h2', 'h3', 'h4', 'h5'):
-            prefix = counter.next(level)
-            display = prefix + clean_heading
+        elif level in ('title', 'h1', 'h2', 'h3', 'h4', 'h5'):
+            # 调试：如果是编号段落，打印详细信息
+            if text and re.match(r'^\d+[.、．]', text):
+                print(f'[DEBUG-NUM] i={i}, level={level}, counter状态=h1={counter.h1},h2={counter.h2},h3={counter.h3},h4={counter.h4}, text="{text[:40]}"')
+            
+            # 优先保留原文编号前缀，而不是强制重编
+            orig_num_match = re.match(r'^([一二三四五六七八九十0-9]+[.、．]\s*)', text)
+            if orig_num_match:
+                # 原文有编号前缀，提取并保留
+                orig_prefix = orig_num_match.group(1)
+                # 提取编号后的正文内容
+                remaining_text = text[len(orig_prefix):]
+                # 对于h3级别，如果原文是"2."格式，保持原样不重编
+                display = orig_prefix + remaining_text
+                # 不调用 counter.next() 来递增，保持counter状态不变（用于其他未编号的段落）
+                prefix_used = orig_prefix
+                print(f'[DEBUG]   -> 保留原文编号="{prefix_used.strip()}", counter保持不变')
+            else:
+                # 原文无编号前缀，使用counter生成
+                prefix = counter.next(level)
+                display = prefix + clean_heading
+                prefix_used = prefix
+                print(f'[DEBUG]   -> prefix="{prefix}", 新counter状态=h1={counter.h1},h2={counter.h2},h3={counter.h3},h4={counter.h4}')
+            
             p = doc.add_paragraph()
             apply_heading_format(p, level, display, preserve_bold=preserve_bold)
             if i in punct_para_indices:
@@ -1155,6 +1438,22 @@ def format_document(src_path: str, dst_path: str):
             elif i in title_punct_para_indices:
                 comment_list.append((display[:20],
                     '标题末尾不应有标点符号'))
+            # 检测阿拉伯数字编号格式（如"1. xxx"），判断是否需要提示改中文格式
+            # 公文规范：h1=一、  h2=（一）  h3=1.  h4=（1）
+            # 如果文档已按规范使用（一）作为h2，则h3使用"1."是正确格式，不需提示
+            # 仅当层级编号格式不匹配规范时才提示
+            arabic_num_match = re.match(r'^(\d+)([.、．])', text)
+            if arabic_num_match and level in ('h1', 'h2', 'h3'):
+                # 判断文档的二级标题格式是否已经是中文（（一）格式）
+                # 如果是，则三级标题用"1."是规范写法，不提示
+                # 只有在一级标题直接用"1."（无中文一、二、三）时才需要提示
+                if level == 'h1' or (level == 'h2' and not has_cn_h1):
+                    num_str = arabic_num_match.group(1)
+                    sep = arabic_num_match.group(2)
+                    orig_num_prefix = num_str + sep
+                    chinese_num = CNUM.get(num_str, num_str)
+                    comment_list.append((orig_num_prefix,
+                        f'建议将"{orig_num_prefix}"改为"（{chinese_num}）"'))
         else:
             # 正文段落
             p = doc.add_paragraph()
@@ -1162,28 +1461,56 @@ def format_document(src_path: str, dst_path: str):
             greeting_kw = '领导|同事|各位|尊敬|您好|下午好|上午好|上午好'
             is_greeting = bool(re.match(r'^.{2,30}[：:]$', text.strip()) and re.search(greeting_kw, text.strip()))
             
-            # 对于有numId的正文段落（Word原生编号列表），保留原始编号前缀
-            # numId对应十进制编号的正文段落，需要添加编号前缀
+            # 对于有numId的正文段落（Word原生编号列表），保留原始编号格式
             orig_num_id = item[4] if len(item) > 4 else None
             orig_num_ilvl = item[5] if len(item) > 5 else None
             display_text = text
             if orig_num_id and orig_num_id != '0':
-                # 检查是否是十进制编号（decimal）
                 an_id = num_to_abstract.get(orig_num_id)
                 if an_id:
                     levels = abstract_num_defs.get(an_id, {})
                     fmt, lvl_txt = levels.get(orig_num_ilvl or '0', (None, None))
-                    if fmt == 'decimal':
-                        # 使用十进制编号格式：1. 2. 3.
-                        # 从num_seq[i]获取当前段落的序号
+                    # lvl_txt 是 Word 的编号模板，如 '（%1）'、'%1.'、'①' 等
+                    is_non_decimal = fmt and fmt not in ('decimal', 'none', None, '')
+                    is_decimal_no_prefix = (
+                        fmt == 'decimal'
+                        and not bool(re.match(r'^\d+[.、．]\s*\S', text))
+                    )
+                    if is_non_decimal:
+                        # 非十进制格式（如①②③④），添加编号前缀到文本
                         seq_val = num_seq.get(i, 1)
-                        num_prefix = f'{seq_val}. '
-                        display_text = num_prefix + text
+                        circle_num = CIRCLE_NUMBERS[seq_val - 1] if 1 <= seq_val <= len(CIRCLE_NUMBERS) else str(seq_val)
+                        display_text = circle_num + text
+                        fmt_name = {
+                            'ideographEnclosedCircle': '①②③④',
+                            'decimalEnclosedCircleChinese': '①②③④',
+                            'chineseCountingThousand': '中文千位',
+                            'chineseCounting': '中文计数',
+                            'lowerLetter': 'a.b.c.',
+                            'upperLetter': 'A.B.C.',
+                        }.get(fmt, fmt)
+                        if i not in discontinuous_seq_warnings:
+                            comment_list.append((circle_num,
+                                f'原文使用编号{fmt_name}，是Word自带编号。建议改为（1）（2）或保留原格式'))
+                    elif is_decimal_no_prefix:
+                        # 文本无编号前缀但有Word原生编号（如 numId=1 -> abstractNumId=0 -> lvlText='（%1）'）
+                        # 根据 lvl_txt 模板生成对应的编号前缀
+                        seq_val = num_seq.get(i, 1)
+                        # 模板替换：'（%1）' -> '（1）', '%1.' -> '1.', '①' -> '①'
+                        if lvl_txt and lvl_txt != '':
+                            prefix = lvl_txt.replace('%1', str(seq_val))
+                        else:
+                            prefix = f'{seq_val}.'
+                        display_text = prefix + text
             
             apply_heading_format(p, level, display_text, no_indent=is_greeting)
             if i in punct_para_indices:
                 comment_list.append((text[:20],
                     '此段落可能缺少句末标点，请人工确认'))
+            if i in discontinuous_seq_warnings:
+                # 用 text[:30] 而不是 display_text[:30]，因为输出文档的纯文本不含编号前缀
+                comment_list.append((text[:30],
+                    discontinuous_seq_warnings[i]))
 
     # 统一添加批注
     _apply_comments_to_doc(doc, comment_list)
