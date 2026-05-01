@@ -14,7 +14,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-# ─────────────────────────── 格式常量 ───────────────────────────
+# ────────────────────────── 格式常量 ──────────────────────────
 FONT_FANGSONG     = "仿宋_GB2312"
 FONT_HEITI        = "黑体"
 FONT_KAITI        = "楷体_GB2312"
@@ -103,7 +103,7 @@ def detect_level(text):
 
 def is_main_title(text):
     t = text.strip()
-    if not t or len(t) > 25:
+    if not t:
         return False
     # 排除时间行（如 "2026年4月"、"2026年4月28日"）
     if re.match(r'^\d{4}年\d{1,2}月\d{0,2}日?\s*$', t):
@@ -114,7 +114,7 @@ def is_main_title(text):
         r'^\d+[.、．]\s*',
         r'^（\d+）',
         r'^[①②③④⑤⑥⑦⑧⑨⑩]',
-        r'^[\d,.\-+%/：:；;，。、]+$',
+        r'^[\d,.\-+/：:；，。、]+$',
     ]:
         if re.match(pat, t):
             return False
@@ -122,6 +122,9 @@ def is_main_title(text):
         return False
     # 排除问候语（含冒号且含称呼关键词）
     if re.search(r'[：:]$', t) and re.search(r'领导|同事|各位|尊敬|您好|下午好|上午好|你好', t):
+        return False
+    # 主标题长度放宽至40字（汇报类文件标题通常较长）
+    if len(t) > 40:
         return False
     return True
 
@@ -152,7 +155,7 @@ class HeadingCounter:
         return ''
 
 
-def apply_heading_format(para, level, text, prefix='', no_indent=False):
+def apply_heading_format(para, level, text, prefix='', no_indent=False, preserve_bold=False):
     para.clear()
     para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     set_para_spacing(para)
@@ -166,7 +169,9 @@ def apply_heading_format(para, level, text, prefix='', no_indent=False):
     }
     cn_font = font_map.get(level, FONT_FANGSONG)
     run = para.add_run(display)
-    set_run_font(run, cn_font, SIZE_SANHAO, bold=False)
+    # 如果原文是加粗的，保留加粗样式（除非明确不保留）
+    is_bold = preserve_bold
+    set_run_font(run, cn_font, SIZE_SANHAO, bold=is_bold)
 
 
 def _calc_smart_col_widths(rows_data, num_cols):
@@ -381,6 +386,9 @@ def _check_punctuation_issues(paragraphs_text):
         text = item[1].strip()
         if not text or len(text) <= 10:
             continue
+        # 跳过主标题（主标题不应有句末标点，不应被检测）
+        if is_main_title(text):
+            continue
         # 标记是否为编号型段落（用于后续判断）
         is_numbered = bool(re.match(r'^\d+[.、．]\s*', text))
         # 跳过标题型文本
@@ -392,8 +400,8 @@ def _check_punctuation_issues(paragraphs_text):
             continue
         if re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text):
             continue
-        # 纯编号+标题行跳过标点检测（如 "1.科技部："）
-        if is_numbered and len(text) <= 12:
+        # 跳过纯编号+标题行跳过标点检测（如 "1.科技部："、短编号标题）
+        if is_numbered and len(text) <= 30:
             continue
         # 跳过纯数字/百分比/短数据行
         if re.match(r'^[\d,.\-+%：:（）()]+$', text):
@@ -534,6 +542,64 @@ def format_document(src_path: str, dst_path: str):
                 if rows_data:
                     paragraphs_text.append(('tbl', rows_data))
 
+        # ──── 预合并：合并被Word拆分的标题碎片 ────
+        # 检测条件：短段落(≤15字)+无标点+无编号前缀，前一个是主标题或同样短
+        i = 0
+        merged = [False] * len(paragraphs_text)  # False=未合并，True=已合并到前一个，跳过
+        while i < len(paragraphs_text):
+            if merged[i]:
+                i += 1
+                continue
+            item = paragraphs_text[i]
+            if item[0] != 'p':
+                i += 1
+                continue
+            text = item[1]
+            # 碎片判断：短文本+无句内标点+无编号前缀+非纯数字+非问候语+不以逗号/顿号结尾（句子分隔非标题续行）
+            greeting_kw = '领导|同事|各位|尊敬|您好|下午好|上午好|你好'
+            is_greeting_text = (
+                re.match(r'^.{2,30}[：:]$', text.strip())
+                and re.search(greeting_kw, text.strip())
+            )
+            # 排除以逗号/顿号结尾的碎片（这是句子中间的分隔，不是标题续行）
+            ends_with_sep = bool(re.search(r'[，、]\s*$', text))
+            is_fragment = (
+                1 < len(text) <= 25
+                and not re.search(r'[。；！？]', text)
+                and not ends_with_sep
+                and not re.match(r'^[一二三四五六七八九十]+、', text)
+                and not re.match(r'^\d+[.、．]', text)
+                and not re.match(r'^（\d+）', text)
+                and not re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text)
+                and not re.match(r'^[\d,.\-+%：:（）()]+$', text)
+                and not is_greeting_text
+            )
+            if is_fragment and i > 0 and not merged[i - 1]:
+                prev = paragraphs_text[i - 1]
+                prev_text = prev[1] if prev[0] == 'p' else ''
+                # 跳过空段落，向前继续找
+                if not prev_text.strip():
+                    i += 1
+                    continue
+                # 前段也是短碎片（≤25字）且不以标点结尾 → 合并
+                # 但如果前段是加粗的主标题（prev[2]=True），或前段明显较长（>20字），不合并
+                prev_is_fragment = (prev[0] == 'p' and 1 < len(prev_text) <= 25
+                                    and not re.search(r'[。；！？]', prev_text))
+                # 新增保护：如果前段是加粗的主标题（bold=True）或明显较长（>20字），不合并
+                # 这防止"新开项目上线..."等标题被错误合并到主标题后面
+                prev_is_bold_main_title = (prev[0] == 'p' and prev[2] is True and len(prev_text) > 10)
+                prev_is_long_fragment = (prev[0] == 'p' and len(prev_text) > 20)
+                if prev_is_fragment and not prev_is_bold_main_title and not prev_is_long_fragment:
+                    # 合并到前一段
+                    merged_text = prev_text + text
+                    paragraphs_text[i - 1] = (prev[0], merged_text, prev[2], prev[3], prev[4], prev[5])
+                    merged[i] = True
+                    i += 1
+                    continue
+            i += 1
+        # 过滤掉已合并的碎片
+        paragraphs_text = [item for i, item in enumerate(paragraphs_text) if not merged[i]]
+
     elif ext in ('.txt', '.md'):
         with open(src_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f.read().splitlines():
@@ -578,12 +644,26 @@ def format_document(src_path: str, dst_path: str):
                 numid_ilvl_level_map[(nid, '0')] = level_map[order]
 
     # 回填 PENDING
+    # 注意：对于十进制编号（numId对应decimal格式）的长段落，应识别为正文而非标题
+    # 因为Word的十进制编号常用于正文中的编号列表（如"1. xxx 2. xxx 3. xxx"）
     for idx, item in enumerate(paragraphs_text):
         if item[0] == 'p' and item[3] == 'PENDING':
             nid, nilvl = item[4], item[5] or '0'
+            resolved_level = numid_ilvl_level_map.get((nid, nilvl))
+            text_content = item[1] if len(item) > 1 else ''
+            
+            # 如果numId对应的是十进制编号（decimal），且文本较长（>20字），应识别为正文
+            # 因为正文中的编号列表通常较长
+            an_id = num_to_abstract.get(nid)
+            if an_id:
+                levels = abstract_num_defs.get(an_id, {})
+                fmt, _ = levels.get(nilvl, (None, None))
+                if fmt == 'decimal' and len(text_content) > 20:
+                    resolved_level = None  # 正文，不自动编号
+            
             paragraphs_text[idx] = (
                 item[0], item[1], item[2],
-                numid_ilvl_level_map.get((nid, nilvl)),
+                resolved_level,
                 item[4], item[5]
             )
 
@@ -629,7 +709,7 @@ def format_document(src_path: str, dst_path: str):
         # 检测各级标题（文本编号前缀）
         level = detect_level(text)
         wnl = item[3] if len(item) > 3 else None
-        # 有文本编号前缀的才算标题候选
+        # 有文本编号前缀才算标题候选
         has_text_prefix = bool(
             re.match(r'^[一二三四五六七八九十]+、', text)
             or re.match(r'^（[一二三四五六七八九十]+）', text)
@@ -700,7 +780,7 @@ def format_document(src_path: str, dst_path: str):
                 has_cn_h1 = True
                 break
     # 如果没有中文一级编号，但存在 X、或 X.（非X.Y）编号段落，
-    # 且 X 后面的子标题是 （X）或 (X)，则提升所有 X. 为 h1
+    # 且 X. 后面的子标题是 （X）或 (X)，则提升所有 X. 为 h1
     promote_x_to_h1 = False
     promote_body_indices = set()  # 需要提升为 h1 的 body 级段落索引
     if not has_cn_h1:
@@ -817,6 +897,23 @@ def format_document(src_path: str, dst_path: str):
         if level and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             is_heading_index.add(idx)
 
+    # ──── 计算正文编号列表的序号（用于保留Word原生十进制编号） ────
+    # 注意：num_seq记录每个段落在其numId序列中的位置，而不是最终累计值
+    num_seq = {}  # idx -> 序号
+    num_seq_count = {}  # (numId, ilvl) -> 当前计数
+    for pi, pitem in enumerate(paragraphs_text):
+        if pitem[0] != 'p':
+            continue
+        orig_num_id = pitem[4] if len(pitem) > 4 else None
+        orig_num_ilvl = pitem[5] if len(pitem) > 5 else None
+        if orig_num_id and orig_num_id != '0':
+            key = (orig_num_id, orig_num_ilvl)
+            if key not in num_seq_count:
+                num_seq_count[key] = 0
+            num_seq_count[key] += 1
+            # 记录当前段落在序列中的位置
+            num_seq[pi] = num_seq_count[key]
+
     for i, item in enumerate(paragraphs_text):
         etype = item[0]
         if etype == 'tbl':
@@ -828,11 +925,13 @@ def format_document(src_path: str, dst_path: str):
             table.style = 'Table Grid'
 
             tbl_elem = table._tbl
-            tblPr = tbl_elem.find(qn('w:tblPr')) or OxmlElement('w:tblPr')
-            if not tbl_elem.find(qn('w:tblPr')):
+            tblPr = tbl_elem.find(qn('w:tblPr'))
+            if tblPr is None:
+                tblPr = OxmlElement('w:tblPr')
                 tbl_elem.insert(0, tblPr)
-            tblW = tblPr.find(qn('w:tblW')) or OxmlElement('w:tblW')
-            if not tblPr.find(qn('w:tblW')):
+            tblW = tblPr.find(qn('w:tblW'))
+            if tblW is None:
+                tblW = OxmlElement('w:tblW')
                 tblPr.insert(0, tblW)
             tblW.set(qn('w:w'), '5000')
             tblW.set(qn('w:type'), 'pct')
@@ -929,12 +1028,10 @@ def format_document(src_path: str, dst_path: str):
             set_para_spacing(p)
             run = p.add_run(text)
             set_run_font(run, FONT_XIAOBIAOSONG, SIZE_ERHAO, bold=False)
-            # 超过2段连续标题则退出标题模式并插入空行
-            if title_count >= 2:
-                title_mode = False
-                title_ended = True
-                blank = doc.add_paragraph()
-                set_para_spacing(blank)
+            # 主标题后始终插入空行（与正文区隔）
+            title_mode = False
+            blank = doc.add_paragraph()
+            set_para_spacing(blank)
             continue
 
         title_mode = False
@@ -981,18 +1078,26 @@ def format_document(src_path: str, dst_path: str):
         if level == 'body' and word_num_level is None:
             prev_etype = paragraphs_text[i - 1][0] if i > 0 else None
             is_after_table = (prev_etype == 'tbl')
+            # 检查前一段是否是加粗（主标题）
+            prev_is_bold = (prev[0] == 'p' and len(prev) > 2 and prev[2] is True) if prev_etype == 'p' else False
             # 表格标题（表1、表2…、表3-1…）不算标题
             is_table_title = bool(re.match(r'^表\s*\d+', text))
             is_short_title = (
                 len(text) <= 25
                 and not re.search(r'[。；]', text)
                 and not text.startswith('附件')
-                and not re.match(r'^[\d,.\-+%：:（]+', text)
+                and not re.match(r'^[\d,.\-+%：:（）()]+$', text)
                 and not is_table_title
             )
+            # 放宽短标题检测：主标题后面的短文本也应该识别为h1
+            # 例如："新开项目上线及业财集成情况" 紧跟主标题，应为"一、新开项目..."
+            is_after_main_title = (prev_is_bold and len(text) <= 20)
             if is_bold and is_short_title:
                 level = 'h1'
             elif is_after_table and is_short_title and len(text) <= 20 and not is_table_title:
+                level = 'h1'
+            elif is_after_main_title and is_short_title:
+                # 主标题后面的短文本提升为一级标题
                 level = 'h1'
 
         clean_heading = text
@@ -1012,10 +1117,19 @@ def format_document(src_path: str, dst_path: str):
         if std_prefix_match and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             clean_heading = text[std_prefix_match.end():].lstrip()
 
+        # 只有带编号前缀的标题才保留加粗（正文长段落不加粗）
+        has_num_prefix = bool(
+            re.match(r'^[一二三四五六七八九十]+、', text)
+            or re.match(r'^\d+[.、．]\s*', text)
+            or re.match(r'^（\d+）', text)
+        )
+        # 短标题（≤25字）+ 有编号前缀 → 保留加粗；长段落不加粗
+        preserve_bold = is_bold and has_num_prefix and len(text) <= 25
+
         if is_multilevel and level in ('h1', 'h2', 'h3', 'h4', 'h5'):
             # X.Y 多级编号：保留原文编号，不自动重编，添加批注提醒
             p = doc.add_paragraph()
-            apply_heading_format(p, level, text)
+            apply_heading_format(p, level, text, preserve_bold=preserve_bold)
             if i in subhead_para_indices:
                 num_m = re.match(r'^(\d+\.\d+[.、．]?)', text)
                 num_str = num_m.group(1) if num_m else ''
@@ -1026,7 +1140,7 @@ def format_document(src_path: str, dst_path: str):
             verb_m = re.match(r'^(\d+[.、．])', text)
             prefix_text = verb_m.group(1) if verb_m else ''
             p = doc.add_paragraph()
-            apply_heading_format(p, 'body', text)
+            apply_heading_format(p, 'body', text, preserve_bold=preserve_bold)
             if i in h3_para_indices:
                 comment_list.append((text[:20],
                     f'编号"{prefix_text}"后直接跟动词，建议改为"一是…""二是…"格式'))
@@ -1034,7 +1148,7 @@ def format_document(src_path: str, dst_path: str):
             prefix = counter.next(level)
             display = prefix + clean_heading
             p = doc.add_paragraph()
-            apply_heading_format(p, level, display)
+            apply_heading_format(p, level, display, preserve_bold=preserve_bold)
             if i in punct_para_indices:
                 comment_list.append((display[:20],
                     '此标题/段落可能缺少句末标点，请人工确认'))
@@ -1045,10 +1159,28 @@ def format_document(src_path: str, dst_path: str):
             # 正文段落
             p = doc.add_paragraph()
             # 问候语（含称呼关键词+以：结尾）不缩进
-            greeting_kw = '领导|同事|各位|尊敬|您好|下午好|上午好|你好'
-            is_greeting = bool(re.match(r'^.{2,30}[：:]$', text.strip())
-                              and re.search(greeting_kw, text.strip()))
-            apply_heading_format(p, level, text, no_indent=is_greeting)
+            greeting_kw = '领导|同事|各位|尊敬|您好|下午好|上午好|上午好'
+            is_greeting = bool(re.match(r'^.{2,30}[：:]$', text.strip()) and re.search(greeting_kw, text.strip()))
+            
+            # 对于有numId的正文段落（Word原生编号列表），保留原始编号前缀
+            # numId对应十进制编号的正文段落，需要添加编号前缀
+            orig_num_id = item[4] if len(item) > 4 else None
+            orig_num_ilvl = item[5] if len(item) > 5 else None
+            display_text = text
+            if orig_num_id and orig_num_id != '0':
+                # 检查是否是十进制编号（decimal）
+                an_id = num_to_abstract.get(orig_num_id)
+                if an_id:
+                    levels = abstract_num_defs.get(an_id, {})
+                    fmt, lvl_txt = levels.get(orig_num_ilvl or '0', (None, None))
+                    if fmt == 'decimal':
+                        # 使用十进制编号格式：1. 2. 3.
+                        # 从num_seq[i]获取当前段落的序号
+                        seq_val = num_seq.get(i, 1)
+                        num_prefix = f'{seq_val}. '
+                        display_text = num_prefix + text
+            
+            apply_heading_format(p, level, display_text, no_indent=is_greeting)
             if i in punct_para_indices:
                 comment_list.append((text[:20],
                     '此段落可能缺少句末标点，请人工确认'))
