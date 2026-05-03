@@ -45,7 +45,8 @@ def ai_is_body(text):
         return None
 
 
-# ──── 审查函数 ────def check_punctuation_issues(paragraphs_text):
+# ──── 审查函数 ────
+def check_punctuation_issues(paragraphs_text):
     """句末标点检测：找出未以句号/问号/叹号结尾的正文段落"""
     issues = []
     for i, item in enumerate(paragraphs_text):
