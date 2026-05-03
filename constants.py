@@ -81,12 +81,19 @@ def should_preserve_bold(level, is_bold, text):
 
 
 def is_greeting(text):
-    """问候语识别
+    """问候语/主送机关识别
     匹配格式：含称呼关键词 + 以冒号结尾的短文本
+    包含：问候语（尊敬、各位领导）、主送机关（局属各单位、总部各部门）
     用途：正文段落不缩进
     """
     greeting_kw = '领导|同事|各位|尊敬|您好|下午好|上午好|你好'
-    return bool(re.match(r'^.{2,30}[：:]$', text.strip()) and re.search(greeting_kw, text.strip()))
+    recipient_kw = '单位|部门|公司|分公司|事业部'
+    t = text.strip()
+    return bool(
+        re.match(r'^.{2,30}[：:]$', t) and (
+            re.search(greeting_kw, t) or re.search(recipient_kw, t)
+        )
+    )
 
 
 def has_text_number_prefix(text):
