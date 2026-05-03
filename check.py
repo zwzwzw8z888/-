@@ -7,11 +7,45 @@
 """
 
 import re
+import os
+import json
 from detect import detect_level, is_main_title
 from constants import has_text_number_prefix, CN_NUMBERS, CNUM_TO_INT
 
 
-def check_punctuation_issues(paragraphs_text):
+# ──── AI 语义判断（可选，配置 DMP_AI_KEY 环境变量启用）────
+def ai_is_body(text):
+    """调 DeepSeek API 判断编号段落是正文还是标题
+    返回 True=正文，False=标题，None=未配置/出错（走原有规则）
+    """
+    api_key = os.environ.get('DMP_AI_KEY', '')
+    if not api_key:
+        return None
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            'https://api.deepseek.com/v1/chat/completions',
+            data=json.dumps({
+                'model': 'deepseek-chat',
+                'messages': [{
+                    'role': 'system',
+                    'content': '判断编号段落是【正文】还是【标题】。正文：说明性内容、联系信息、表单列举。标题：概括性小节标题。只答"正文"或"标题"。'
+                }, {
+                    'role': 'user',
+                    'content': f'"{text}"'
+                }],
+                'max_tokens': 5,
+                'temperature': 0
+            }).encode(),
+            headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+        )
+        resp = json.loads(urllib.request.urlopen(req, timeout=5).read())
+        return '正文' in resp['choices'][0]['message']['content']
+    except Exception:
+        return None
+
+
+# ──── 审查函数 ────def check_punctuation_issues(paragraphs_text):
     """句末标点检测：找出未以句号/问号/叹号结尾的正文段落"""
     issues = []
     for i, item in enumerate(paragraphs_text):
@@ -48,6 +82,10 @@ def check_punctuation_issues(paragraphs_text):
             continue
         if len(text) <= 20 and not re.search(r'[，。；！？]', text):
             continue
+        # AI 兜底：15-35字无句号的编号段落，AI 判断是否为标题（标题不查句号）
+        if has_text_number_prefix(text) and 15 < len(text) <= 35 and not re.search(r'[。；]', text):
+            if ai_is_body(text) is False:
+                continue  # AI 判为标题，跳过句末标点检查
         last_char = text[-1]
         if last_char not in ('。', '？', '！', '…', '"', '"', ')', '）', '；'):
             issues.append((i, text[:60]))
@@ -133,6 +171,9 @@ def check_numbering_separator(paragraphs_text, num_to_abstract, abstract_num_def
         text = item[1].strip()
         if not text:
             continue
+        level = item[3] if len(item) > 3 else None
+        if level is not None:
+            continue  # 已有标题层级，由 check_title_punctuation 处理
         orig_num_id = item[4] if len(item) > 4 else None
         if not orig_num_id or orig_num_id == '0':
             continue
@@ -175,7 +216,16 @@ def check_missing_h2(paragraphs_text):
         # 仅有分号但结构为"标题：内容"的仍算标题
         is_likely_body = is_digit_prefix and (
             '。' in text or len(text) > 40
+            or bool(re.search(r'\d{11}', text))
+            or ('@' in text and '.' in text)
+            or bool(re.search(r'\d{4}年\d{1,2}月\d{1,2}日', text))
+            or bool(re.search(r'\d{1,2}:\d{2}', text))
         )
+        # AI 兜底：规则拿不准时（15-40字、无句号、无联系信息），调 AI 判断
+        if is_digit_prefix and not is_likely_body:
+            ai_result = ai_is_body(text)
+            if ai_result is True:
+                is_likely_body = True  # AI 判为正文
 
         if effective_level == 'h1':
             last_h1_index = i
