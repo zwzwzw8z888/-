@@ -83,8 +83,8 @@ def check_punctuation_issues(paragraphs_text):
             continue
         if len(text) <= 20 and not re.search(r'[，。；！？]', text):
             continue
-        # AI 兜底：15-35字无句号的编号段落，AI 判断是否为标题（标题不查句号）
-        if has_text_number_prefix(text) and 15 < len(text) <= 35 and not re.search(r'[。；]', text):
+        # AI 兜底：15-30字无句号的编号段落（>30字的标题少见，直接当正文查句号）
+        if has_text_number_prefix(text) and 15 < len(text) <= 30 and not re.search(r'[。；]', text):
             if ai_is_body(text) is False:
                 continue  # AI 判为标题，跳过句末标点检查
         last_char = text[-1]
