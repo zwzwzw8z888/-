@@ -14,7 +14,7 @@ FONT_FANGSONG     = "仿宋_GB2312"
 FONT_HEITI        = "黑体"
 FONT_KAITI        = "楷体_GB2312"
 FONT_XIAOBIAOSONG = "方正小标宋简体"
-FONT_TIMES_NEW_ROMAN = "Times New Roman"
+FONT_TIMES_NEW_ROMAN = "仿宋_GB2312"
 
 SIZE_CHUHAO  = 42  # Pt(42) — 调用处自行包装
 SIZE_ERHAO   = 22
