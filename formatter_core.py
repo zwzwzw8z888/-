@@ -440,10 +440,14 @@ def format_document(src_path: str, dst_path: str):
 
     # 新建文档
     doc = Document()
-    comment_list = []  # 收集批注: [(匹配文本前缀, comment_text), ...]
+    comment_list = []  # 收集批注: [(匹配文本前缀, comment_text), ...]  # 收集批注: [(匹配文本前缀, comment_text), ...]
     section = doc.sections[0]
-    section.page_width  = Cm(21)
-    section.page_height = Cm(29.7)
+    section = doc.sections[0]
+    section.top_margin    = MARGIN_TOP
+    section.bottom_margin = MARGIN_BOTTOM
+    section.left_margin   = MARGIN_LEFT
+    section.right_margin  = MARGIN_RIGHT
+    section = doc.sections[0]
     section.top_margin    = MARGIN_TOP
     section.bottom_margin = MARGIN_BOTTOM
     section.left_margin   = MARGIN_LEFT
@@ -1177,10 +1181,14 @@ def format_document(src_path: str, dst_path: str):
     # 规则：落款只在全文末尾，不在文档开头或中间
     doc_paras = list(doc.paragraphs)
     total_paras = len(doc_paras)
+    # 忽略末尾空行，计算有效末尾位置
+    last_content_idx = total_paras - 1
+    while last_content_idx >= 0 and not doc_paras[last_content_idx].text.strip():
+        last_content_idx -= 1
     for pi in range(total_paras - 1, 0, -1):
         if is_signature_date(doc_paras[pi].text):
-            # 只处理末尾 5 段内的日期，且之后不能有标题或长正文
-            if total_paras - pi > 5:
+            # 只处理靠近末尾的日期（忽略尾随空行）
+            if last_content_idx - pi > 5:
                 continue
             # 日期后不能有正文（标题或长段落）
             has_content_after = False
@@ -1237,3 +1245,4 @@ def format_document(src_path: str, dst_path: str):
     _add_page_number(doc)
     doc.save(dst_path)
     return dst_path, warnings
+
