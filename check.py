@@ -18,7 +18,7 @@ def ai_is_body(text):
     """调 DeepSeek API 判断编号段落是正文还是标题
     返回 True=正文，False=标题，None=未配置/出错（走原有规则）
     """
-    api_key = os.environ.get('DMP_AI_KEY', '')
+    api_key = os.environ.get('CSCEC_AI_KEY', '')
     if not api_key:
         return None
     try:
