@@ -25,9 +25,12 @@ SIZE_ERHAO  = Pt(SIZE_ERHAO)
 SIZE_SANHAO = Pt(SIZE_SANHAO)
 
 
-def set_run_font(run, cn_font, size_pt, bold=False, color=None):
-    """设置 run 的字体、字号、加粗、颜色"""
-    run.font.name = FONT_TIMES_NEW_ROMAN
+def set_run_font(run, cn_font, size_pt, bold=False, color=None, num_font=None):
+    """设置 run 的字体、字号、加粗、颜色。
+    cn_font = 中文字体, num_font = 数字/字母字体（默认仿宋_GB2312）"""
+    if num_font is None:
+        num_font = FONT_FANGSONG
+    run.font.name = num_font
     run.font.size = size_pt
     run.font.bold = bold
     if color:
@@ -38,8 +41,8 @@ def set_run_font(run, cn_font, size_pt, bold=False, color=None):
         rFonts = OxmlElement('w:rFonts')
         rPr.insert(0, rFonts)
     rFonts.set(qn('w:eastAsia'), cn_font)
-    rFonts.set(qn('w:ascii'), FONT_TIMES_NEW_ROMAN)
-    rFonts.set(qn('w:hAnsi'), FONT_TIMES_NEW_ROMAN)
+    rFonts.set(qn('w:ascii'), num_font)
+    rFonts.set(qn('w:hAnsi'), num_font)
 
 
 def set_para_spacing(para, twips=LINE_SPACING_TWIPS):
@@ -174,6 +177,9 @@ def apply_heading_format(para, level, text, prefix='', no_indent=False, preserve
         'title': FONT_XIAOBIAOSONG,
     }
     cn_font = font_map.get(level, FONT_FANGSONG)
+    # 数字/字母字体随层级：title→方正小标宋, h1→黑体, h2→楷体, 其余→仿宋
+    num_font_map = {'title': FONT_XIAOBIAOSONG, 'h1': FONT_HEITI, 'h2': FONT_KAITI}
+    num_font = num_font_map.get(level, FONT_FANGSONG)
 
     # 逐 run 重建（保留局部加粗）
     has_mixed = (bold_runs and len(bold_runs) > 1
@@ -189,7 +195,7 @@ def apply_heading_format(para, level, text, prefix='', no_indent=False, preserve
                 first = False
             if chunk.strip():
                 run = para.add_run(chunk)
-                set_run_font(run, cn_font, SIZE_SANHAO, bold=rbold)
+                set_run_font(run, cn_font, SIZE_SANHAO, bold=rbold, num_font=num_font)
             pos += rlen
         return
 
@@ -198,9 +204,9 @@ def apply_heading_format(para, level, text, prefix='', no_indent=False, preserve
     if level == 'title':
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         para.paragraph_format.first_line_indent = None
-        set_run_font(run, cn_font, SIZE_ERHAO, bold=False)
+        set_run_font(run, cn_font, SIZE_ERHAO, bold=False, num_font=num_font)
     else:
-        set_run_font(run, cn_font, SIZE_SANHAO, bold=preserve_bold)
+        set_run_font(run, cn_font, SIZE_SANHAO, bold=preserve_bold, num_font=num_font)
 
 
 def resolve_final_level(idx, item, promote_x_to_h1, promote_body_indices,

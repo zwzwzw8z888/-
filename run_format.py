@@ -12,7 +12,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from format_core import format_document
+from formatter_core import format_document
 
 # 从命令行参数读取文件路径
 if len(sys.argv) < 2:

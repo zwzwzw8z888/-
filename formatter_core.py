@@ -454,7 +454,7 @@ def format_document(src_path: str, dst_path: str):
     section.right_margin  = MARGIN_RIGHT
 
     normal_style = doc.styles['Normal']
-    normal_style.font.name = FONT_TIMES_NEW_ROMAN
+    normal_style.font.name = FONT_FANGSONG
     normal_style.font.size = SIZE_SANHAO
     nf = normal_style.element.find('.//' + qn('w:rFonts'))
     if nf is None:
@@ -483,7 +483,7 @@ def format_document(src_path: str, dst_path: str):
         for idx, item in enumerate(paragraphs_text):
             if item[0] == 'p':
                 t = item[1].strip()
-                if re.match(r'^\d+[.、．]\s*\S', t) and not re.match(r'^\d+\.\d+', t):
+                if re.match(r'^\d+[.、．]\s*\S', t) and not re.match(r'^\d+\.\d+', t) and not re.match(r'^\d{1,2}:\d{2}', t):
                     x_prefix_paras.append(idx)
         if x_prefix_paras:
             # 检查任意一个 X. 段落后是否有 （X）或 (X) 子标题
@@ -665,7 +665,6 @@ def format_document(src_path: str, dst_path: str):
                         f'之间隔有大节标题，序号可能不连续，建议确认原文'
                     )
 
-    last_was_h1 = False  # 用于h1间空行
     for i, item in enumerate(paragraphs_text):
         # 跳过已合并到主标题的段落
         if i in merged_titles:
@@ -752,7 +751,7 @@ def format_document(src_path: str, dst_path: str):
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             set_para_spacing(p)
             run = p.add_run(combined_title)
-            set_run_font(run, FONT_XIAOBIAOSONG, SIZE_ERHAO, bold=False)
+            set_run_font(run, FONT_XIAOBIAOSONG, SIZE_ERHAO, bold=False, num_font=FONT_XIAOBIAOSONG)
             
             # 跳过已合并的主标题段落（通过continue外部for循环的逻辑）
             # 记录需要跳过的起始索引，外部循环会处理
@@ -840,8 +839,10 @@ def format_document(src_path: str, dst_path: str):
             looks_like_heading = (
                 not has_text_prefix
                 and len(text) <= 15
-                and not re.search(r'[。；！？]', text)  # 无句末标点
-                and not re.match(r'^\d+[.、．]', text)  # 无数字编号前缀
+                and not re.search(r'[。；！？]', text)
+                and not re.match(r'^\d+[.、．]', text)
+                and not re.match(r'^\d{1,2}:\d{2}', text)     # 时间项（09:00…）
+                and not re.match(r'^第[一二三四五六七八九十\d]+天', text)  # "第一天"
             )
             if looks_like_heading:
                 level = 'h1'
@@ -861,6 +862,8 @@ def format_document(src_path: str, dst_path: str):
                 and not re.search(r'[。；]', text)
                 and not text.startswith('附件')
                 and not re.match(r'^[\d,.\-+%：:（）()]+$', text)
+                and not re.match(r'^\d{1,2}:\d{2}', text)       # 时间项
+                and not re.match(r'^第[一二三四五六七八九十\d]+天', text)  # "第一天"
                 and not is_tbl_title
                 and not is_dt_line
             )
@@ -926,10 +929,6 @@ def format_document(src_path: str, dst_path: str):
                     f'编号"{prefix_text}"后直接跟动词，建议改为"一是…""二是…"格式',
                     'verb_after_num'))
         elif level in ('title', 'h1', 'h2', 'h3', 'h4', 'h5'):
-            # 空行规则：h1间、附件前
-            if last_was_h1 and (level == 'h1' or level == 'h3' or '附件' in text[:8]):
-                _add_blank_line(doc)
-            
             # 调试：如果是编号段落，打印详细信息
             if text and re.match(r'^\d+[.、．]', text):
                 print(f'[DEBUG-NUM] i={i}, level={level}, counter状态=h1={counter.h1},h2={counter.h2},h3={counter.h3},h4={counter.h4}, text="{text[:40]}"')
@@ -1066,8 +1065,6 @@ def format_document(src_path: str, dst_path: str):
                             if idx == i:
                                 comment_list.append((text[:30], suggestion, 'number_prefix'))
                                 break
-            if level == 'h1':
-                last_was_h1 = True
         else:
             # 正文段落
             p = doc.add_paragraph()
@@ -1187,8 +1184,6 @@ def format_document(src_path: str, dst_path: str):
                     '原文使用Word自动编号（阿拉伯数字1.2.3.），建议改为二级标题（（一）（二））格式',
                     'number_prefix'))
 
-            last_was_h1 = False
-
     # 注入编号序号问题的批注
     comment_list.extend(list_num_issues)
 
@@ -1261,10 +1256,4 @@ def format_document(src_path: str, dst_path: str):
     _add_page_number(doc)
     doc.save(dst_path)
     return dst_path, warnings
-
-
-def _add_blank_line(doc):
-    """插入一个 28.9pt 行高的空行"""
-    p = doc.add_paragraph()
-    set_para_spacing(p)
 

@@ -17,7 +17,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from constants import FONT_TIMES_NEW_ROMAN
+from constants import FONT_FANGSONG
 
 
 def _split_run_at(target_elem, run, split_pos):
@@ -461,9 +461,9 @@ def _add_page_number(doc):
         r = OxmlElement('w:r')
         rPr = OxmlElement('w:rPr')
         rFonts = OxmlElement('w:rFonts')
-        rFonts.set(qn('w:ascii'), FONT_TIMES_NEW_ROMAN)
+        rFonts.set(qn('w:ascii'), FONT_FANGSONG)
         rFonts.set(qn('w:eastAsia'), '宋体')
-        rFonts.set(qn('w:hAnsi'), FONT_TIMES_NEW_ROMAN)
+        rFonts.set(qn('w:hAnsi'), FONT_FANGSONG)
         rPr.append(rFonts)
         for tag in ('w:sz', 'w:szCs'):
             sz = OxmlElement(tag)

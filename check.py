@@ -10,7 +10,7 @@ import re
 import os
 import json
 from detect import detect_level, is_main_title
-from constants import has_text_number_prefix, CNUM_TO_INT
+from constants import has_text_number_prefix, CNUM_TO_INT, int_to_cn
 
 
 # ──── AI 语义判断（可选，配置 DMP_AI_KEY 环境变量启用）────
@@ -415,7 +415,12 @@ def check_list_numbering_restart(paragraphs_text, num_seq=None):
 
         # 检测一级标题
         is_text_h1 = bool(re.match(r'^[一二三四五六七八九十]+、', text))
-        is_word_h1 = (wnl == 'h1')
+        # Word 编号 h1：排除时间项、日序项、日程说明（这些不应是标题）
+        is_schedule = bool(re.match(r'^\d{1,2}:\d{2}', text.lstrip()))
+        is_day_marker = bool(re.match(r'^第[一二三四五六七八九十\d]+天', text.lstrip()))
+        # 日程类：短文本 + 含日程关键词（致辞、讲解、考试、休息、午餐等）
+        is_agenda = (len(text) <= 20 and re.search(r'致辞|讲解|考试|演练|休息|午餐|晚餐|实操|答疑|考核|总结', text))
+        is_word_h1 = (wnl == 'h1' and not is_schedule and not is_day_marker and not is_agenda)
         if is_text_h1 or is_word_h1:
             # 检测文字编号的一级标题序号是否连续
             if is_text_h1:
