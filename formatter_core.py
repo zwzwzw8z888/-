@@ -665,6 +665,7 @@ def format_document(src_path: str, dst_path: str):
                         f'之间隔有大节标题，序号可能不连续，建议确认原文'
                     )
 
+    last_was_h1 = False  # 用于h1间空行
     for i, item in enumerate(paragraphs_text):
         # 跳过已合并到主标题的段落
         if i in merged_titles:
@@ -925,6 +926,10 @@ def format_document(src_path: str, dst_path: str):
                     f'编号"{prefix_text}"后直接跟动词，建议改为"一是…""二是…"格式',
                     'verb_after_num'))
         elif level in ('title', 'h1', 'h2', 'h3', 'h4', 'h5'):
+            # 空行规则：h1间、附件前
+            if last_was_h1 and (level == 'h1' or level == 'h3' or '附件' in text[:8]):
+                _add_blank_line(doc)
+            
             # 调试：如果是编号段落，打印详细信息
             if text and re.match(r'^\d+[.、．]', text):
                 print(f'[DEBUG-NUM] i={i}, level={level}, counter状态=h1={counter.h1},h2={counter.h2},h3={counter.h3},h4={counter.h4}, text="{text[:40]}"')
@@ -1005,6 +1010,13 @@ def format_document(src_path: str, dst_path: str):
                 print(f'[DEBUG] i={i} -> prefix="{prefix}", 新counter状态=h1={counter.h1},h2={counter.h2},h3={counter.h3},h4={counter.h4}')
                 heading_body = clean_heading
             
+            # 空行规则：h1间、附件前、版记前
+            if last_was_h1 and level == 'h1':
+                _add_blank_line(doc)
+            elif '附件' in text[:8] and last_was_h1:
+                _add_blank_line(doc)
+
+            
             p = doc.add_paragraph()
             apply_heading_format(p, level, heading_body, prefix=prefix_used, preserve_bold=preserve_bold, bold_runs=bold_runs)
             if i in punct_para_indices:
@@ -1054,6 +1066,8 @@ def format_document(src_path: str, dst_path: str):
                             if idx == i:
                                 comment_list.append((text[:30], suggestion, 'number_prefix'))
                                 break
+            if level == 'h1':
+                last_was_h1 = True
         else:
             # 正文段落
             p = doc.add_paragraph()
@@ -1173,6 +1187,8 @@ def format_document(src_path: str, dst_path: str):
                     '原文使用Word自动编号（阿拉伯数字1.2.3.），建议改为二级标题（（一）（二））格式',
                     'number_prefix'))
 
+            last_was_h1 = False
+
     # 注入编号序号问题的批注
     comment_list.extend(list_num_issues)
 
@@ -1245,4 +1261,10 @@ def format_document(src_path: str, dst_path: str):
     _add_page_number(doc)
     doc.save(dst_path)
     return dst_path, warnings
+
+
+def _add_blank_line(doc):
+    """插入一个 28.9pt 行高的空行"""
+    p = doc.add_paragraph()
+    set_para_spacing(p)
 

@@ -10,7 +10,7 @@ import re
 import os
 import json
 from detect import detect_level, is_main_title
-from constants import has_text_number_prefix, CN_NUMBERS, CNUM_TO_INT
+from constants import has_text_number_prefix, CNUM_TO_INT
 
 
 # ──── AI 语义判断（可选，配置 DMP_AI_KEY 环境变量启用）────
@@ -423,10 +423,10 @@ def check_list_numbering_restart(paragraphs_text, num_seq=None):
                 if m:
                     cur_num = CNUM_TO_INT.get(m.group(1), 0)
                     if last_text_h1_num > 0 and cur_num != last_text_h1_num + 1:
-                        expected_cn = CN_NUMBERS[last_text_h1_num] if last_text_h1_num < len(CN_NUMBERS) else str(last_text_h1_num + 1)
+                        expected_cn = int_to_cn(last_text_h1_num + 1)
                         issues.append((
                             text[:20],
-                            f'一级标题编号不连续，上一标题为"{CN_NUMBERS[last_text_h1_num - 1] if last_text_h1_num <= len(CN_NUMBERS) else ""}、"，当前为"{m.group(1)}、"，建议改为"{CN_NUMBERS[last_text_h1_num] if last_text_h1_num < len(CN_NUMBERS) else ""}、"',
+                            f'一级标题编号不连续，上一标题为"{int_to_cn(last_text_h1_num)}、"，当前为"{m.group(1)}、"，建议改为"{int_to_cn(last_text_h1_num + 1)}、"',
                             'number_prefix'
                         ))
                     last_text_h1_num = cur_num

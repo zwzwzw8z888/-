@@ -28,10 +28,20 @@ MARGIN_BOTTOM = 3.5
 MARGIN_LEFT   = 2.8
 MARGIN_RIGHT  = 2.6
 
-CN_NUMBERS = ['一','二','三','四','五','六','七','八','九','十',
-              '十一','十二','十三','十四','十五','十六','十七','十八','十九','二十']
-CNUM = {str(i+1): s for i, s in enumerate(CN_NUMBERS)}
-CNUM_TO_INT = {s: i+1 for i, s in enumerate(CN_NUMBERS)}
+def int_to_cn(n):
+    """数字转中文小写：1→一, 10→十, 21→二十一, 99→九十九"""
+    if n <= 0: return ''
+    digit_cn = ['', '一','二','三','四','五','六','七','八','九']
+    if n <= 9: return digit_cn[n]
+    if n == 10: return '十'
+    if n <= 19: return '十' + digit_cn[n - 10]
+    tens = n // 10
+    ones = n % 10
+    return digit_cn[tens] + '十' + (digit_cn[ones] if ones else '')
+
+CN_NUMBERS = [int_to_cn(i+1) for i in range(30)]  # 兼容旧代码，实际用int_to_cn
+CNUM = {str(i+1): int_to_cn(i+1) for i in range(30)}
+CNUM_TO_INT = {int_to_cn(i+1): i+1 for i in range(30)}
 CIRCLE_NUMBERS = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩',
                   '⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳']
 

@@ -133,12 +133,10 @@ class HeadingCounter:
     def next(self, level):
         if level == 'h1':
             self.h1 += 1; self.h2 = self.h3 = self.h4 = self.h5 = 0
-            idx = self.h1 - 1
-            return (CN_NUMBERS[idx] if idx < len(CN_NUMBERS) else str(self.h1)) + '、'
+            return int_to_cn(self.h1) + '、'
         elif level == 'h2':
             self.h2 += 1; self.h3 = self.h4 = self.h5 = 0
-            idx = self.h2 - 1
-            return f'（{CN_NUMBERS[idx] if idx < len(CN_NUMBERS) else str(self.h2)}）'
+            return f'（{int_to_cn(self.h2)}）'
         elif level == 'h3':
             self.h3 += 1; self.h4 = self.h5 = 0
             return f'{self.h3}.'
