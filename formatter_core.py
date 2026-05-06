@@ -1009,13 +1009,6 @@ def format_document(src_path: str, dst_path: str):
                 print(f'[DEBUG] i={i} -> prefix="{prefix}", 新counter状态=h1={counter.h1},h2={counter.h2},h3={counter.h3},h4={counter.h4}')
                 heading_body = clean_heading
             
-            # 空行规则：h1间、附件前、版记前
-            if last_was_h1 and level == 'h1':
-                _add_blank_line(doc)
-            elif '附件' in text[:8] and last_was_h1:
-                _add_blank_line(doc)
-
-            
             p = doc.add_paragraph()
             apply_heading_format(p, level, heading_body, prefix=prefix_used, preserve_bold=preserve_bold, bold_runs=bold_runs)
             if i in punct_para_indices:
