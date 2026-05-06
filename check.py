@@ -116,9 +116,9 @@ def check_punctuation_issues(paragraphs_text):
         # 含冒号 + 以数字或右括号结尾 → 列表项/联系信息，不查句号
         if re.search(r'[：:]', text) and re.search(r'[\d）\)\]】]$', text):
             continue
-        # AI 兜底：15-30字无句号的编号段落（>30字的标题少见，直接当正文查句号）
+        # AI 兜底：15-30字无句号的编号段落（>30字/含逗号的直接当正文查句号）
         if has_text_number_prefix(text) and 15 < len(text) <= 30 and not re.search(r'[。；]', text):
-            if ai_cache.get(text) is False:
+            if '，' not in text and ai_cache.get(text) is False:
                 continue  # AI 判为标题，跳过句末标点检查
         last_char = text[-1]
         if last_char not in ('。', '？', '！', '…', '"', '"', ')', '）', '；'):
