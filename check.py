@@ -250,7 +250,7 @@ def check_missing_h2(paragraphs_text):
         # 是否为正文：有句号（真正文结束标记）或很长（>40字）才算正文
         # 仅有分号但结构为"标题：内容"的仍算标题
         is_likely_body = is_digit_prefix and (
-            '。' in text or len(text) > 40
+            '。' in text or '，' in text or len(text) > 40
             or bool(re.search(r'\d{11}', text))
             or ('@' in text and '.' in text)
             or bool(re.search(r'\d{4}年\d{1,2}月\d{1,2}日', text))
