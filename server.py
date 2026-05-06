@@ -9,6 +9,7 @@ import os
 import re
 import uuid
 import json
+import zipfile
 import threading
 import time
 from pathlib import Path
@@ -79,6 +80,68 @@ def api_format():
         as_attachment=True,
         download_name=f"{stem}_公文格式.docx",
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    )
+
+
+# ══════════════════════════════════════════════
+#  1.5 批量格式化接口
+# ══════════════════════════════════════════════
+
+@app.route('/api/batch', methods=['POST'])
+def api_batch():
+    """上传多个文件 → 格式化后打包为 zip 返回"""
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({'ok': False, 'msg': '未上传文件'}), 400
+
+    uid = uuid.uuid4().hex
+    batch_dir = OUTPUT_DIR / f"batch_{uid}"
+    batch_dir.mkdir(exist_ok=True)
+    zip_path = OUTPUT_DIR / f"batch_{uid}.zip"
+    results = []
+
+    for f in files:
+        if not f.filename:
+            continue
+        ext = Path(f.filename).suffix.lower()
+        if ext not in ALLOWED_EXT:
+            results.append({'file': f.filename, 'ok': False, 'msg': f'不支持格式 {ext}'})
+            continue
+        if f.content_length and f.content_length > MAX_FILE_SIZE:
+            results.append({'file': f.filename, 'ok': False, 'msg': '文件超过10MB'})
+            continue
+
+        stem = Path(f.filename).stem
+        src_path = UPLOAD_DIR / f"{uid}_{stem}{ext}"
+        dst_path = batch_dir / f"{stem}_公文格式.docx"
+        try:
+            f.save(str(src_path))
+            format_document(str(src_path), str(dst_path))
+            results.append({'file': f.filename, 'ok': True})
+        except Exception as e:
+            results.append({'file': f.filename, 'ok': False, 'msg': str(e)[:100]})
+        finally:
+            src_path.unlink(missing_ok=True)
+
+    # 打包 zip
+    with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(batch_dir.iterdir()):
+            if f.suffix == '.docx':
+                zf.write(str(f), f.name)
+    # 清理临时目录
+    import shutil
+    shutil.rmtree(str(batch_dir), ignore_errors=True)
+    # 5分钟后清理zip
+    def _cleanup_zip():
+        time.sleep(300)
+        zip_path.unlink(missing_ok=True)
+    threading.Thread(target=_cleanup_zip, daemon=True).start()
+
+    return send_file(
+        str(zip_path),
+        as_attachment=True,
+        download_name=f"格式化结果_{len(results)}个文件.zip",
+        mimetype='application/zip'
     )
 
 

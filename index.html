@@ -349,20 +349,16 @@
       <div class="hint">将文件拖拽到此处，或点击选择文件</div>
       <div class="fmt">支持格式：.docx &nbsp; .txt &nbsp; .md（最大10MB）</div>
     </div>
-    <input type="file" id="fileInput1" accept=".docx,.txt,.md" />
+    <input type="file" id="fileInput1" accept=".docx,.txt,.md" multiple />
 
-    <div class="file-preview" id="preview1">
-      <span>📄</span>
-      <span class="fname" id="fname1">—</span>
-      <span class="fsize" id="fsize1"></span>
-      <button class="remove-btn" onclick="clearFile(1)" title="移除">✕</button>
-    </div>
+    <div id="fileList1" style="display:none;margin-top:12px;display:flex;flex-direction:column;gap:8px"></div>
 
     <div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap">
       <button class="btn btn-primary" id="formatBtn" onclick="doFormat()" disabled>
         ⚡ 开始格式化
       </button>
       <button class="btn btn-outline" onclick="clearFile(1)">清除</button>
+      <span style="font-size:12px;color:var(--muted);padding-top:12px" id="fileCount1"></span>
     </div>
 
     <div class="progress-wrap" id="progress1">
@@ -540,31 +536,65 @@
       e.preventDefault();
       zone.classList.remove('drag-over');
       const files = [...e.dataTransfer.files];
-      if (files.length) setFile(tabIdx, files[0]);
+      if (files.length) addFiles(tabIdx, files);
     });
     input.addEventListener('change', () => {
-      if (input.files.length) setFile(tabIdx, input.files[0]);
+      if (input.files.length) addFiles(tabIdx, [...input.files]);
       input.value = '';
     });
   }
 
-  function setFile(tabIdx, file) {
-    fileStore[tabIdx] = file;
-    document.getElementById(`fname${tabIdx}`).textContent = file.name;
-    document.getElementById(`fsize${tabIdx}`).textContent = formatSize(file.size);
-    document.getElementById(`preview${tabIdx}`).classList.add('show');
+  function addFiles(tabIdx, files) {
+    if (!fileStore[tabIdx]) fileStore[tabIdx] = [];
+    for (const f of files) {
+      if (tabIdx === 2 && !f.name.endsWith('.docx')) continue;
+      fileStore[tabIdx].push(f);
+    }
+    renderFileList(tabIdx);
     if (tabIdx === 1) document.getElementById('formatBtn').disabled = false;
     if (tabIdx === 2) document.getElementById('reviewBtn').disabled = false;
-    // 清掉旧结果
     hideResult(tabIdx);
     if (tabIdx === 2) { document.getElementById('reviewResult').style.display='none'; }
   }
 
+  function renderFileList(tabIdx) {
+    const files = fileStore[tabIdx] || [];
+    const el = document.getElementById(`fileList${tabIdx}`);
+    if (tabIdx === 1) {
+      el.innerHTML = files.map((f, i) => `
+        <div class="file-preview show" style="margin-top:0">
+          <span>📄</span>
+          <span class="fname">${escHtml(f.name)}</span>
+          <span class="fsize">${formatSize(f.size)}</span>
+          <button class="remove-btn" onclick="removeFile(1,${i})">✕</button>
+        </div>
+      `).join('');
+      document.getElementById('fileCount1').textContent = files.length ? `已选 ${files.length} 个文件` : '';
+    } else {
+      // Tab 2 stays single-file
+      if (files.length) {
+        const f = files[0];
+        document.getElementById(`fname${tabIdx}`).textContent = f.name;
+        document.getElementById(`fsize${tabIdx}`).textContent = formatSize(f.size);
+        document.getElementById(`preview${tabIdx}`).classList.add('show');
+      }
+    }
+  }
+
+  function removeFile(tabIdx, idx) {
+    fileStore[tabIdx].splice(idx, 1);
+    if (fileStore[tabIdx].length === 0) {
+      delete fileStore[tabIdx];
+      document.getElementById('formatBtn').disabled = true;
+    }
+    renderFileList(tabIdx);
+  }
+
   function clearFile(tabIdx) {
     delete fileStore[tabIdx];
-    document.getElementById(`preview${tabIdx}`).classList.remove('show');
-    if (tabIdx === 1) document.getElementById('formatBtn').disabled = true;
+    document.getElementById('formatBtn').disabled = true;
     if (tabIdx === 2) document.getElementById('reviewBtn').disabled = true;
+    renderFileList(tabIdx);
     hideResult(tabIdx);
     if (tabIdx === 2) { document.getElementById('reviewResult').style.display='none'; }
   }
@@ -594,28 +624,26 @@
 
   // ══════════════════════ Tab1: 格式化 ══════════════════════
   async function doFormat() {
-    const file = fileStore[1];
-    if (!file) return;
+    const files = fileStore[1];
+    if (!files || !files.length) return;
 
     document.getElementById('formatBtn').disabled = true;
     showProgress(1);
     hideResult(1);
 
     const fd = new FormData();
-    fd.append('file', file);
+    files.forEach(f => fd.append('files', f));
 
     try {
-      const resp = await fetch(API + '/api/format', { method: 'POST', body: fd });
+      const resp = await fetch(API + '/api/batch', { method: 'POST', body: fd });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ msg: `服务错误 ${resp.status}` }));
         showResult(1, false, `❌ 转换失败：${err.msg}`);
         return;
       }
-      // 触发下载
       const blob = await resp.blob();
-      const stem = file.name.replace(/\.[^.]+$/, '');
-      downloadBlob(blob, `${stem}_公文格式.docx`);
-      showResult(1, true, `✅ 格式化完成！已自动下载 <b>${stem}_公文格式.docx</b>`);
+      downloadBlob(blob, `格式化结果_${files.length}个文件.zip`);
+      showResult(1, true, `✅ 格式化完成！已自动下载 <b>${files.length}</b> 个文件的 zip 包`);
     } catch(e) {
       showResult(1, false, `❌ 网络错误：${e.message}`);
     } finally {
@@ -626,8 +654,9 @@
 
   // ══════════════════════ Tab2: 内容审查 ══════════════════════
   async function doReview() {
-    const file = fileStore[2];
-    if (!file) return;
+    const files = fileStore[2];
+    if (!files || !files.length) return;
+    const file = files[0];
 
     document.getElementById('reviewBtn').disabled = true;
     showProgress(2);
