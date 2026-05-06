@@ -15,39 +15,69 @@ from constants import has_text_number_prefix, CNUM_TO_INT, int_to_cn
 
 # ──── AI 语义判断（可选，配置 DMP_AI_KEY 环境变量启用）────
 def ai_is_body(text):
-    """调 DeepSeek API 判断编号段落是正文还是标题
+    """调 DeepSeek API 判断编号段落是正文还是标题（单段，已弃用，保留兼容）
     返回 True=正文，False=标题，None=未配置/出错（走原有规则）
     """
+    result = ai_batch_is_body([text])
+    return result.get(text, None)
+
+
+def ai_batch_is_body(texts):
+    """批量调 DeepSeek API 判断多段编号段落是正文还是标题
+    返回 {text: True/False, ...}，未配置则返回空 {}
+    """
+    if not texts:
+        return {}
     api_key = os.environ.get('CSCEC_AI_KEY', '')
     if not api_key:
-        return None
+        return {}
     try:
         import urllib.request
+        numbered = [f'{i+1}."{t}"' for i, t in enumerate(texts)]
+        prompt = '判断以下编号段落是【正文】还是【标题】。正文：描述动作/目标/措施的完整句（如"提升…能力"）、具体说明。标题：名词性短语、纲要要点、时间地点项（如"培训时间"）、联系信息。每行只答"正文"或"标题"。\n' + '\n'.join(numbered)
         req = urllib.request.Request(
             'https://api.deepseek.com/v1/chat/completions',
             data=json.dumps({
                 'model': 'deepseek-chat',
-                'messages': [{
-                    'role': 'system',
-                    'content': '判断编号段落是【正文】还是【标题】。正文：描述动作/目标/措施的完整句（如"提升…能力""加强…工作"）、具体说明。标题：名词性短语、纲要要点、时间地点项（如"培训时间""培训地点"）、联系信息。只答"正文"或"标题"。'
-                }, {
-                    'role': 'user',
-                    'content': f'"{text}"'
-                }],
-                'max_tokens': 5,
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': len(texts) * 4,
                 'temperature': 0
             }).encode(),
             headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
         )
-        resp = json.loads(urllib.request.urlopen(req, timeout=5).read())
-        return '正文' in resp['choices'][0]['message']['content']
+        resp = json.loads(urllib.request.urlopen(req, timeout=8).read())
+        lines = resp['choices'][0]['message']['content'].strip().split('\n')
+        result = {}
+        for i, line in enumerate(lines):
+            if i < len(texts):
+                result[texts[i]] = '正文' in line
+        return result
     except Exception:
-        return None
+        return {}
 
 
 # ──── 审查函数 ────
+def _prefetch_ai_decisions(paragraphs_text):
+    """预收集所有需要 AI 判断的文本，批量一次调 API，返回 {text: is_body}"""
+    pending = set()
+    for item in paragraphs_text:
+        if item[0] != 'p':
+            continue
+        text = item[1].strip()
+        if not text or len(text) <= 10:
+            continue
+        if not has_text_number_prefix(text):
+            continue
+        if 15 < len(text) <= 30 and not re.search(r'[。；]', text):
+            pending.add(text)
+    if not pending:
+        return {}
+    return ai_batch_is_body(list(pending))
+
+
 def check_punctuation_issues(paragraphs_text):
     """句末标点检测：找出未以句号/问号/叹号结尾的正文段落"""
+    ai_cache = _prefetch_ai_decisions(paragraphs_text)
     issues = []
     for i, item in enumerate(paragraphs_text):
         if item[0] != 'p':
@@ -88,7 +118,7 @@ def check_punctuation_issues(paragraphs_text):
             continue
         # AI 兜底：15-30字无句号的编号段落（>30字的标题少见，直接当正文查句号）
         if has_text_number_prefix(text) and 15 < len(text) <= 30 and not re.search(r'[。；]', text):
-            if ai_is_body(text) is False:
+            if ai_cache.get(text, True) is False:
                 continue  # AI 判为标题，跳过句末标点检查
         last_char = text[-1]
         if last_char not in ('。', '？', '！', '…', '"', '"', ')', '）', '；'):
@@ -202,6 +232,7 @@ def check_missing_h2(paragraphs_text):
     - 短文本数字编号（如"1.科技部"）→ 是标题，一级跳三级应提示缺少二级标题
     - 长文本数字编号（如"1.本年度节后新开项目1个..."）→ 是正文，不提示跳级
     """
+    ai_cache = _prefetch_ai_decisions(paragraphs_text)
     issues = []
     last_h1_index = None
 
@@ -227,8 +258,7 @@ def check_missing_h2(paragraphs_text):
         )
         # AI 兜底：规则拿不准时（15-40字、无句号、无联系信息），调 AI 判断
         if is_digit_prefix and not is_likely_body:
-            ai_result = ai_is_body(text)
-            if ai_result is True:
+            if ai_cache.get(text, True) is True:
                 is_likely_body = True  # AI 判为正文
 
         if effective_level == 'h1':
