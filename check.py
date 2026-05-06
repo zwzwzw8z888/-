@@ -118,7 +118,7 @@ def check_punctuation_issues(paragraphs_text):
             continue
         # AI 兜底：15-30字无句号的编号段落（>30字的标题少见，直接当正文查句号）
         if has_text_number_prefix(text) and 15 < len(text) <= 30 and not re.search(r'[。；]', text):
-            if ai_cache.get(text, True) is False:
+            if ai_cache.get(text) is False:
                 continue  # AI 判为标题，跳过句末标点检查
         last_char = text[-1]
         if last_char not in ('。', '？', '！', '…', '"', '"', ')', '）', '；'):
@@ -256,10 +256,13 @@ def check_missing_h2(paragraphs_text):
             or bool(re.search(r'\d{4}年\d{1,2}月\d{1,2}日', text))
             or bool(re.search(r'\d{1,2}:\d{2}', text))
         )
-        # AI 兜底：规则拿不准时（15-40字、无句号、无联系信息），调 AI 判断
+        # AI 兜底：规则拿不准时，调 AI 判断
         if is_digit_prefix and not is_likely_body:
-            if ai_cache.get(text, True) is True:
-                is_likely_body = True  # AI 判为正文
+            ai_val = ai_cache.get(text)
+            if ai_val is True:
+                is_likely_body = True
+            elif ai_val is False:
+                is_likely_body = False
 
         if effective_level == 'h1':
             last_h1_index = i
