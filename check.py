@@ -417,10 +417,42 @@ def check_title_trailing_punct(paragraphs_text, num_to_abstract, abstract_num_de
                 if fmt == 'decimal':
                     continue
 
+        # h4/h5 分项列举：；和。结尾是标准写法，不报
+        is_h4 = bool(re.match(r'^（\d+）', text))
+        is_h5 = bool(re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]', text))
+        if (is_h4 or is_h5) and text.rstrip()[-1] in ('；', '。'):
+            continue
+
         # 标题应以非句号结尾
         last_char = text.rstrip()[-1]
         if last_char in ('。', '；', '，', '：', ':'):
             issues.append((idx, text, last_char))
+
+    # ── 后处理：排除分项列举 ──
+    # 连续 h4/h5 项，前 N-1 个以 ；结尾、末项以 。结尾 → 合法
+    if len(issues) >= 2:
+        groups = []
+        cur = [issues[0]]
+        for prev, item in zip(issues, issues[1:]):
+            if item[0] == prev[0] + 1:
+                cur.append(item)
+            else:
+                groups.append(cur)
+                cur = [item]
+        groups.append(cur)
+
+        keep = []
+        for g in groups:
+            if len(g) < 2:
+                keep.extend(g)
+                continue
+            endings = [item[2] for item in g]
+            # 全；或 前N-1个；+末。→ 分项列举
+            if all(e == '；' for e in endings) or \
+               (all(e == '；' for e in endings[:-1]) and endings[-1] == '。'):
+                continue
+            keep.extend(g)
+        issues = keep
 
     return issues
 

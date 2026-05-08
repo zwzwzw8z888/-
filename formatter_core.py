@@ -864,6 +864,8 @@ def format_document(src_path: str, dst_path: str):
                 and not re.match(r'^[\d,.\-+%：:（）()]+$', text)
                 and not re.match(r'^\d{1,2}:\d{2}', text)       # 时间项
                 and not re.match(r'^第[一二三四五六七八九十\d]+天', text)  # "第一天"
+                and '、' not in text                             # 列举内容不是标题
+                and '：' not in text.lstrip()[:15]               # 标签项不是标题
                 and not is_tbl_title
                 and not is_dt_line
             )
